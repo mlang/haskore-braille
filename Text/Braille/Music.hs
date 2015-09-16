@@ -50,8 +50,9 @@ brl :: Braille -> Parser Braille
 brl b = satisfy (== toChar b) $> b <?> [toChar b]
 
 anyBrl :: Parser Braille
-anyBrl = (toEnum . flip (-) 0x2800 . fromEnum) <$> satisfy (unicodeBraille . fromEnum) where
-  unicodeBraille c = c >= 0x2800 && c <= 0x28FF
+anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
+  toBraille = toEnum . flip (-) 0x2800 . fromEnum
+  isInUBrlBlock c = c >= 0x2800 && c <= 0x28FF
 
 type AugmentationDots = Int
 augmentationDots = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
@@ -80,12 +81,12 @@ data Sign = Note AmbiguousValue Step AugmentationDots
 note :: Parser Sign
 note = try parseNote where
   parseNote = Note <$> ambiguousValue <*> step <*> augmentationDots <?> "note"
-  ambiguousValue = lookAhead $ anyBrl >>= check where
-    check d = case toEnum (fromEnum d .&. fromEnum Dot36) of
-              Dot36  -> return WholeOr16th
-              Dot3   -> return HalfOr32th
-              Dot6   -> return QuarterOr64th
-              NoDots -> return EighthOr128th
+  ambiguousValue = lookAhead $ anyBrl >>= getValue where
+    getValue d = return $ case toEnum (fromEnum d .&. fromEnum Dot36) of
+                          Dot36  -> WholeOr16th
+                          Dot3   -> HalfOr32th
+                          Dot6   -> QuarterOr64th
+                          NoDots -> EighthOr128th
   step = anyBrl >>= check where
     check d = case toEnum (fromEnum d .&. fromEnum Dot1245) of
               Dot145    -> return C
