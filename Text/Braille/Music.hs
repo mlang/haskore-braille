@@ -14,6 +14,8 @@ import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
 import Text.Parsec.String (Parser)
 
+-- I do not like the fact that decimal dot input is unsafe and can not
+-- be validated at compile time.
 --brl :: Int -> Char
 --brl = toEnum . go 10240 where
 --  go u 0 = u
@@ -22,12 +24,13 @@ import Text.Parsec.String (Parser)
 --    isDot d = d > 0 && d < 9
 --    (ds,d) = v `divMod` 10
 
+-- So just "generate" a sum type for 6-dot Braille (one-shot by-hand macro)
 genDataBraille :: String
 genDataBraille =
     "data Braille = " ++ intercalate " | " ctors ++ " deriving (Enum, Eq)" where
-  ctors = "NoDots" : map ctorName [1..255] where
+  ctors = "NoDots" : map ctorName [1..63] where
     ctorName :: Int -> String
-    ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..7] . testBit
+    ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..5] . testBit
 
 data Braille = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Dot4
              | Dot14 | Dot24 | Dot124 | Dot34 | Dot134 | Dot234 | Dot1234 | Dot5
@@ -53,7 +56,8 @@ anyBrl = (toEnum . flip (-) 0x2800 . fromEnum) <$> satisfy (unicodeBraille . fro
 type AugmentationDots = Int
 augmentationDots = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
 
---data Rest = Rest AmbiguousValue AugmentationDots deriving (Eq, Show)
+-- Braille music is inherently ambiguous.  The time signature is necessary
+-- to automatically caluclate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
                     deriving (Eq, Show)
 
@@ -67,8 +71,10 @@ rest = Rest <$> ambiguousValue <*> augmentationDots where
 
 data Step = C | D | E | F | G | A | B
           deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
 data Sign = Note AmbiguousValue Step AugmentationDots
           | Rest AmbiguousValue AugmentationDots
+          -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
 note :: Parser Sign
@@ -107,4 +113,6 @@ type Measure = [Voice]
 
 measure = sepBy voice $ brl Dot126 *> brl Dot345
 
+-- TBC: Disambiguate values by recursively generating all possibilities and
+-- only accepting those which add up to the time signature.
 
