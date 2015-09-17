@@ -3,13 +3,15 @@ module Text.Braille.Music (
   Braille(..), toChar, Sign(..), Parser,
   anyBrl, brl,
   note, rest, partialVoice, partialMeasure, voice, measure,
-  parse, (<*>), (*>)
+  pvs,
+  test, parse, (<*>), (*>)
 ) where
 
 import Control.Applicative ((<$>), (<*>), (*>), (<|>))
 import Data.Bits (setBit, testBit, (.&.))
 import Data.Functor (($>))
-import Data.List (intercalate)
+import Data.List (intercalate, tails)
+import Data.Traversable (traverse)
 import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
 import Text.Parsec.String (Parser)
@@ -114,6 +116,16 @@ type Measure = [Voice]
 
 measure = sepBy voice $ brl Dot126 *> brl Dot345
 
--- TBC: Disambiguate values by recursively generating all possibilities and
--- only accepting those which add up to the time signature.
+rationals WholeOr16th = [1, 1 / 16]
+rationals HalfOr32th = [1 / 2, 1 / 32]
+rationals QuarterOr64th = [1 / 4, 1 / 64]
+rationals EighthOr128th = [1 / 8, 1 / 128]
+
+pvs :: Rational -> PartialVoice -> [[Rational]]
+pvs ts = filter f . traverse g . init . tails where
+  f rs = sum rs == ts
+  g ((Note v _ d):_) = rationals v
+  g ((Rest v d):_) = rationals v
+
+test = parse partialVoice "" "⠥⠥" >>= return . pvs 1
 
