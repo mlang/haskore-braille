@@ -1,12 +1,12 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
 module Text.Braille.Music (
-  Braille(..), toChar, Sign(..), Step(..), Parser, AmbiguousValue(..),
+  Braille(..), toChar, Sign(..), Step(..), Parser, AmbiguousValue(..), AugmentationDots,
+  Duration(..),
   anyBrl, brl,
-  note, rest, partialVoice, partialMeasure, voice, measure,
-  pvs, pms, vs, ms, testpv, testpm, testms, large, small, parse, (<*>), (*>), (<|>)
+  testms
 ) where
 
-import Control.Applicative ((<$>), (<*>), (*>), (<|>))
+import Control.Applicative (pure, liftA2, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
 import Control.Monad.Trans.State (StateT(..), get, put)
 import Data.Bits (setBit, testBit, (.&.))
@@ -17,17 +17,6 @@ import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
 import Text.Parsec.String (Parser)
 
--- I do not like the fact that decimal dot input is unsafe and can not
--- be validated at compile time.
---brl :: Int -> Char
---brl = toEnum . go 10240 where
---  go u 0 = u
---  -- silently ignores errors (invalid digits [0,9] and duplicates)
---  go u v = go (if isDot d then setBit u $ pred d else u) ds where
---    isDot d = d > 0 && d < 9
---    (ds,d) = v `divMod` 10
-
--- So just "generate" a sum type for 6-dot Braille (one-shot by-hand macro)
 genDataBraille :: String
 genDataBraille =
     "data Braille = " ++ intercalate " | " ctors ++ " deriving (Enum, Eq)" where
@@ -58,39 +47,42 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
   isInUBrlBlock c = c >= 0x2800 && c <= 0x28FF
 
 type AugmentationDots = Int
-augmentationDots = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
+augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
 
 -- Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically caluclate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
                     deriving (Enum, Eq, Show)
 
-rest :: Parser Sign
-rest = Rest <$> ambiguousValue <*> augmentationDots where
-  ambiguousValue = choice [ brl Dot134  $> WholeOr16th
-                          , brl Dot136  $> HalfOr32th
-                          , brl Dot1236 $> QuarterOr64th
-                          , brl Dot1346 $> EighthOr128th
-                          ]
-
 data Step = C | D | E | F | G | A | B
           deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-data Sign = Note AmbiguousValue Step AugmentationDots
-          | Rest AmbiguousValue AugmentationDots
+data Sign = Note { ambiguousValue :: AmbiguousValue
+                 , realValue :: Maybe Rational
+                 , step :: Step
+                 , augmentationDots :: AugmentationDots
+                 }
+          | Rest { ambiguousValue :: AmbiguousValue
+                 , realValue :: Maybe Rational
+                 , augmentationDots :: AugmentationDots
+                 }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
 note :: Parser Sign
 note = try parseNote where
-  parseNote = Note <$> ambiguousValue <*> step <*> augmentationDots <?> "note"
-  ambiguousValue = lookAhead $ anyBrl >>= getValue where
+  parseNote = Note <$> ambiguousValueP
+                   <*> pure Nothing
+                   <*> stepP
+                   <*> augmentationDotsP
+                   <?> "note"
+  ambiguousValueP = lookAhead $ anyBrl >>= getValue where
     getValue d = return $ case toEnum (fromEnum d .&. fromEnum Dot36) of
                           Dot36  -> WholeOr16th
                           Dot3   -> HalfOr32th
                           Dot6   -> QuarterOr64th
                           NoDots -> EighthOr128th
-  step = anyBrl >>= check where
+  stepP = anyBrl >>= check where
     check d = case toEnum (fromEnum d .&. fromEnum Dot1245) of
               Dot145    -> return C
               Dot15     -> return D
@@ -101,60 +93,57 @@ note = try parseNote where
               Dot245    -> return B
               otherwise -> fail "Not a note"
 
+rest :: Parser Sign
+rest = Rest <$> ambiguousValueP <*> pure Nothing <*> augmentationDotsP where
+  ambiguousValueP = choice [ brl Dot134  $> WholeOr16th
+                           , brl Dot136  $> HalfOr32th
+                           , brl Dot1236 $> QuarterOr64th
+                           , brl Dot1346 $> EighthOr128th
+                           ]
+
 type PartialVoice = [Sign]
 
-partialVoice = many1 $ note <|> rest
+partialVoiceP = many1 $ note <|> rest
 
 type PartialMeasure = [PartialVoice]
 
-partialMeasure = sepBy partialVoice $ brl Dot5 *> brl Dot2
+partialMeasureP = sepBy partialVoiceP $ brl Dot5 *> brl Dot2
 
 type Voice = [PartialMeasure]
 
-voice = sepBy partialMeasure $ brl Dot46 *> brl Dot13
+voiceP = sepBy partialMeasureP $ brl Dot46 *> brl Dot13
 
 type Measure = [Voice]
 
-measure = sepBy voice $ brl Dot126 *> brl Dot345
+measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
-rationals WholeOr16th = [1, 1 / 16]
-rationals HalfOr32th = [1 / 2, 1 / 32]
-rationals QuarterOr64th = [1 / 4, 1 / 64]
-rationals EighthOr128th = [1 / 8, 1 / 128]
+pvs :: Rational -> PartialVoice -> [PartialVoice]
+pvs = curry $ (go =<<) . runStateT choices where
+  go (a, (_, [])) = return a
+  go (a, s)       = runStateT choices s >>= fmap (a ++) . go
+  choices         = large <|> small
 
-testpv s = pvs 1 <$> parse partialVoice "" s
-testpm s = pms 1 <$> parse partialMeasure "" s
-testms s = ms 1 <$> parse measure "" s
-
-getAmbiguousValue (Note a _ _) = a
-getAmbiguousValue (Rest a _) = a
-
-pvs :: Rational -> PartialVoice -> [[Rational]]
-pvs l s = runStateT choices (l, s) >>= go where
-  go (a,(_,[])) = return a
-  go (a,s)      = runStateT choices s >>= fmap (a ++) . go
-  choices = large <|> small
-
-pms :: Rational -> PartialMeasure -> [[[Rational]]]
+pms :: Rational -> PartialMeasure -> [PartialMeasure]
 pms l = filter f . traverse (pvs l) where
-  f p = and $ map ((== sum (head p)) . sum) (tail p)
+  f p = all ((== dur (head p)) . dur) (tail p)
 
-vs :: Rational -> Voice -> [[[[Rational]]]]
+vs :: Rational -> Voice -> [Voice]
 vs l = traverse (pms l)
 
-ms :: Rational -> Measure -> [[[[[Rational]]]]]
+ms :: Rational -> Measure -> [Measure]
 ms l = traverse (vs l)
 
-large = do (l, x:xs) <- get
-           let v = 2 ^^ (-(fromEnum (getAmbiguousValue x)))
+one o = do (l, x:xs) <- get
+           let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
            guard ((l - v) >= 0)
            put (l-v, xs)
-           return [v]
+           return [x { realValue = Just v }]
            
-small = do (l, x:xs) <- get
-           let v = 2 ^^ (-(4 + fromEnum (getAmbiguousValue x)))
-           guard ((l - v) >= 0)
-           put (l-v, xs)
-           return [v]
+large = one 0
+small = one 4
 
+testms s = ms 1 <$> parse measureP "" s
 
+class    Duration a            where dur :: a -> Maybe Rational
+instance Duration Sign         where dur = realValue
+instance Duration PartialVoice where dur = foldl (liftA2 (+)) (pure 0) . map dur
