@@ -1,9 +1,7 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
 module Text.Braille.Music (
-  Braille(..), toChar, Sign(..), Step(..), Parser, AmbiguousValue(..), AugmentationDots,
-  Duration(..),
-  anyBrl, brl,
-  testms
+  Sign(..), AmbiguousValue(..), Step(..), AugmentationDots,
+  Measure, testms
 ) where
 
 import Control.Applicative (pure, liftA2, (<$>), (<*>), (*>), (<|>))
@@ -47,7 +45,7 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
   isInUBrlBlock c = c >= 0x2800 && c <= 0x28FF
 
 type AugmentationDots = Int
-augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
+augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> pure n
 
 -- Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically caluclate the real values of notes and rests.
@@ -119,31 +117,34 @@ measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
 pvs :: Rational -> PartialVoice -> [PartialVoice]
 pvs = curry $ (go =<<) . runStateT choices where
-  go (a, (_, [])) = return a
-  go (a, s)       = runStateT choices s >>= fmap (a ++) . go
-  choices         = large <|> small
+  go (a, (_,[])) = return a
+  go (a, s)      = runStateT choices s >>= fmap (a ++) . go
+  choices        = large <|> small
+  large          = one 0
+  small          = one 4
+  one o          = do (l, x:xs) <- get
+                      let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
+                      guard ((l - v) >= 0)
+                      put (l-v, xs)
+                      return [x { realValue = Just v }]
 
 pms :: Rational -> PartialMeasure -> [PartialMeasure]
-pms l = filter f . traverse (pvs l) where
-  f p = all ((== dur (head p)) . dur) (tail p)
+pms l = filter allEqDur . traverse (pvs l)
 
 vs :: Rational -> Voice -> [Voice]
-vs l = traverse (pms l)
+vs l []     = return []
+vs l (x:xs) = do pm <- pms l x
+                 maybe [] (\d -> fmap (pm :) (vs (l - d) xs)) (dur pm)
 
 ms :: Rational -> Measure -> [Measure]
-ms l = traverse (vs l)
+ms l = filter allEqDur . traverse (vs l)
 
-one o = do (l, x:xs) <- get
-           let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
-           guard ((l - v) >= 0)
-           put (l-v, xs)
-           return [x { realValue = Just v }]
-           
-large = one 0
-small = one 4
+allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 testms s = ms 1 <$> parse measureP "" s
 
-class    Duration a            where dur :: a -> Maybe Rational
-instance Duration Sign         where dur = realValue
-instance Duration PartialVoice where dur = foldl (liftA2 (+)) (pure 0) . map dur
+class    Duration a              where dur :: a -> Maybe Rational
+instance Duration Sign           where dur = realValue
+instance Duration PartialVoice   where dur = foldl (liftA2 (+)) (pure 0) . map dur
+instance Duration PartialMeasure where dur pm = case pm of [] -> Nothing; otherwise -> dur (head pm)
+instance Duration Voice          where dur = foldl (liftA2 (+)) (pure 0) . map dur
