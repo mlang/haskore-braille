@@ -1,13 +1,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Text.Braille.Music (
-  Braille(..), toChar, Sign(..), Parser,
+  Braille(..), toChar, Sign(..), Step(..), Parser, AmbiguousValue(..),
   anyBrl, brl,
   note, rest, partialVoice, partialMeasure, voice, measure,
-  pvs,
-  test, parse, (<*>), (*>)
+  pvs, pms, vs, ms, testpv, testpm, testms, large, small, parse, (<*>), (*>), (<|>)
 ) where
 
 import Control.Applicative ((<$>), (<*>), (*>), (<|>))
+import Control.Monad (guard)
+import Control.Monad.Trans.State (StateT(..), get, put)
 import Data.Bits (setBit, testBit, (.&.))
 import Data.Functor (($>))
 import Data.List (intercalate, tails)
@@ -62,7 +63,7 @@ augmentationDots = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> return n
 -- Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically caluclate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
-                    deriving (Eq, Show)
+                    deriving (Enum, Eq, Show)
 
 rest :: Parser Sign
 rest = Rest <$> ambiguousValue <*> augmentationDots where
@@ -121,11 +122,39 @@ rationals HalfOr32th = [1 / 2, 1 / 32]
 rationals QuarterOr64th = [1 / 4, 1 / 64]
 rationals EighthOr128th = [1 / 8, 1 / 128]
 
-pvs :: Rational -> PartialVoice -> [[Rational]]
-pvs ts = filter f . traverse g . init . tails where
-  f rs = sum rs == ts
-  g ((Note v _ d):_) = rationals v
-  g ((Rest v d):_) = rationals v
+testpv s = pvs 1 <$> parse partialVoice "" s
+testpm s = pms 1 <$> parse partialMeasure "" s
+testms s = ms 1 <$> parse measure "" s
 
-test = parse partialVoice "" "⠥⠥" >>= return . pvs 1
+getAmbiguousValue (Note a _ _) = a
+getAmbiguousValue (Rest a _) = a
+
+pvs :: Rational -> PartialVoice -> [[Rational]]
+pvs l s = runStateT choices (l, s) >>= go where
+  go (a,(_,[])) = return a
+  go (a,s)      = runStateT choices s >>= fmap (a ++) . go
+  choices = large <|> small
+
+pms :: Rational -> PartialMeasure -> [[[Rational]]]
+pms l = filter f . traverse (pvs l) where
+  f p = and $ map ((== sum (head p)) . sum) (tail p)
+
+vs :: Rational -> Voice -> [[[[Rational]]]]
+vs l = traverse (pms l)
+
+ms :: Rational -> Measure -> [[[[[Rational]]]]]
+ms l = traverse (vs l)
+
+large = do (l, x:xs) <- get
+           let v = 2 ^^ (-(fromEnum (getAmbiguousValue x)))
+           guard ((l - v) >= 0)
+           put (l-v, xs)
+           return [v]
+           
+small = do (l, x:xs) <- get
+           let v = 2 ^^ (-(4 + fromEnum (getAmbiguousValue x)))
+           guard ((l - v) >= 0)
+           put (l-v, xs)
+           return [v]
+
 

@@ -19,6 +19,6 @@ executable braille-music
   main-is:             Main.hs
   -- other-modules:       
   -- other-extensions:    
-  build-depends:       base >=4.7 && <4.8, parsec >=3.1.9
+  build-depends:       base >=4.7 && <4.8, parsec >=3.1.9, transformers
   -- hs-source-dirs:      
   default-language:    Haskell2010
