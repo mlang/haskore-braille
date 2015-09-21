@@ -9,7 +9,7 @@ import Control.Monad (guard)
 import Control.Monad.Trans.State (StateT(..), get, put)
 import Data.Bits (setBit, testBit, (.&.))
 import Data.Functor (($>))
-import Data.List (intercalate, tails)
+import Data.List (intercalate)
 import Data.Traversable (traverse)
 import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
@@ -34,7 +34,7 @@ data Braille = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Do
              deriving (Bounded, Enum, Eq, Read, Show)
 
 toChar :: Braille -> Char
-toChar = toEnum . (+ 10240) . fromEnum
+toChar = toEnum . (+ 0x2800) . fromEnum
 
 brl :: Braille -> Parser Braille
 brl b = satisfy (== toChar b) $> b <?> [toChar b]
@@ -134,7 +134,7 @@ pms l = filter allEqDur . traverse (pvs l)
 vs :: Rational -> Voice -> [Voice]
 vs l []     = return []
 vs l (x:xs) = do pm <- pms l x
-                 maybe [] (\d -> fmap (pm :) (vs (l - d) xs)) (dur pm)
+                 maybe [] (\d -> (:) <$> pure pm <*> (vs (l - d) xs)) (dur pm)
 
 ms :: Rational -> Measure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
