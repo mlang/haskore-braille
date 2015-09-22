@@ -116,15 +116,16 @@ type Measure = [Voice]
 measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
 pvs :: Rational -> PartialVoice -> [PartialVoice]
-pvs = curry $ (go =<<) . runStateT choices where
-  go (a, (_,[])) = return a
-  go (a, s)      = runStateT choices s >>= fmap (a ++) . go
-  choices        = large <|> small
+pvs l s = map fst $ runStateT parser (l, s) where
+  parser = do a <- large <|> small
+              (l,xs) <- get
+              guard (l >= 0)
+              case xs of []        -> return a
+                         otherwise -> (a ++) <$> parser
   large          = one 0
   small          = one 4
   one o          = do (l, x:xs) <- get
                       let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
-                      guard ((l - v) >= 0)
                       put (l-v, xs)
                       return [x { realValue = Just v }]
 
