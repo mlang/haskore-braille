@@ -1,12 +1,13 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
-module Text.Braille.Music (
+module Data.Braille.Music (
   Sign(..), AmbiguousValue(..), Step(..), AugmentationDots,
-  Measure, testms
+  dur,
+  Measure, testms, test
 ) where
 
 import Control.Applicative (pure, liftA2, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
-import Control.Monad.Trans.State (StateT(..), get, put)
+import Control.Monad.Trans.State (get, put, runStateT)
 import Data.Bits (setBit, testBit, (.&.))
 import Data.Functor (($>))
 import Data.List (intercalate)
@@ -15,12 +16,16 @@ import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
 import Text.Parsec.String (Parser)
 
-genDataBraille :: String
-genDataBraille =
-    "data Braille = " ++ intercalate " | " ctors ++ " deriving (Enum, Eq)" where
-  ctors = "NoDots" : map ctorName [1..63] where
-    ctorName :: Int -> String
-    ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..5] . testBit
+-- Braille music code only uses the old 6-dot system.  We enumerate all
+-- possible combinations of dots to use the type system to avoid accidentally
+-- specifying invalid dot patterns in the source code.
+--
+-- genDataBraille :: String
+-- genDataBraille =
+--     "data Braille = " ++ intercalate " | " ctors ++ " deriving (Enum, Eq)" where
+--   ctors = "NoDots" : map ctorName [1..63] where
+--     ctorName :: Int -> String
+--     ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..5] . testBit
 
 data Braille = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Dot4
              | Dot14 | Dot24 | Dot124 | Dot34 | Dot134 | Dot234 | Dot1234 | Dot5
@@ -33,12 +38,15 @@ data Braille = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Do
              | Dot13456 | Dot23456 | Dot123456
              deriving (Bounded, Enum, Eq, Read, Show)
 
+-- | Convert to Unicode Braille.
 toChar :: Braille -> Char
 toChar = toEnum . (+ 0x2800) . fromEnum
 
+-- | Match a single Braille cell.
 brl :: Braille -> Parser Braille
 brl b = satisfy (== toChar b) $> b <?> [toChar b]
 
+-- | Matches any Unicode Braille character.
 anyBrl :: Parser Braille
 anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
   toBraille = toEnum . flip (-) 0x2800 . fromEnum
@@ -48,13 +56,15 @@ type AugmentationDots = Int
 augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> pure n
 
 -- Braille music is inherently ambiguous.  The time signature is necessary
--- to automatically caluclate the real values of notes and rests.
+-- to automatically calculate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
                     deriving (Enum, Eq, Show)
 
+-- | The pitch class.
 data Step = C | D | E | F | G | A | B
           deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
+-- | A Braille music symbol.
 data Sign = Note { ambiguousValue :: AmbiguousValue
                  , realValue :: Maybe Rational
                  , step :: Step
@@ -67,6 +77,7 @@ data Sign = Note { ambiguousValue :: AmbiguousValue
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
+-- | Parse a Braille music note.
 note :: Parser Sign
 note = try parseNote where
   parseNote = Note <$> ambiguousValueP
@@ -91,6 +102,7 @@ note = try parseNote where
               Dot245    -> return B
               otherwise -> fail "Not a note"
 
+-- | Parse a Braille music rest.
 rest :: Parser Sign
 rest = Rest <$> ambiguousValueP <*> pure Nothing <*> augmentationDotsP where
   ambiguousValueP = choice [ brl Dot134  $> WholeOr16th
@@ -99,31 +111,38 @@ rest = Rest <$> ambiguousValueP <*> pure Nothing <*> augmentationDotsP where
                            , brl Dot1346 $> EighthOr128th
                            ]
 
+-- A Braille music measure can contain parallel and sequential music.
+-- The inner most voice is called partial voice because it can potentially
+-- span just across a part of the whole measure.
 type PartialVoice = [Sign]
 
 partialVoiceP = many1 $ note <|> rest
 
+-- | A partial measure contains parallel partial voices.
 type PartialMeasure = [PartialVoice]
 
 partialMeasureP = sepBy partialVoiceP $ brl Dot5 *> brl Dot2
 
+-- | A voice consists of one or more partial measures.
 type Voice = [PartialMeasure]
 
 voiceP = sepBy partialMeasureP $ brl Dot46 *> brl Dot13
 
+-- | A measure contains several parallel voices.
 type Measure = [Voice]
 
 measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
 pvs :: Rational -> PartialVoice -> [PartialVoice]
-pvs = curry $ map fst . runStateT parser where
-  parser = do a <- large <|> small
-              (l,xs) <- get
-              guard (l >= 0)
-              case xs of []        -> return a
-                         otherwise -> (a ++) <$> parser
+pvs = curry $ map fst . runStateT (allWhich (large <|> small)) where
+  allWhich p = do a <- p
+                  (l,xs) <- get
+                  guard (l >= 0)
+                  case xs of []        -> return a
+                             otherwise -> (a ++) <$> allWhich p
   large  = one 0
   small  = one 4
+  -- ...
   one o  = do (l, x:xs) <- get
               let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
               put (l-v, xs)
@@ -135,17 +154,22 @@ pms l = filter allEqDur . traverse (pvs l)
 vs :: Rational -> Voice -> [Voice]
 vs l []     = return []
 vs l (x:xs) = do pm <- pms l x
-                 maybe [] (\d -> (:) <$> pure pm <*> (vs (l - d) xs)) (dur pm)
+                 maybe [] (\d -> (pm :) <$> vs (l - d) xs) (dur pm)
 
 ms :: Rational -> Measure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
 
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
-testms s = ms 1 <$> parse measureP "" s
+testms l s = ms l <$> parse measureP "" s
+
+test = let l = 3/2 in
+       do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
+          return $ length $ filter (== (Just l)) $ map dur candidates
 
 class    Duration a              where dur :: a -> Maybe Rational
 instance Duration Sign           where dur = realValue
 instance Duration PartialVoice   where dur = foldl (liftA2 (+)) (pure 0) . map dur
 instance Duration PartialMeasure where dur pm = case pm of [] -> Nothing; otherwise -> dur (head pm)
 instance Duration Voice          where dur = foldl (liftA2 (+)) (pure 0) . map dur
+instance Duration Measure        where dur m = case m of [] -> Nothing; otherwise -> dur (head m)

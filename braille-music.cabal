@@ -16,6 +16,6 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  build-depends:       base >=4.7 && <4.8, parsec >=3.1.9, transformers
-  exposed-modules:     Text.Braille.Music
+  build-depends:       base >=4.7, parsec >=3.1.9, transformers
+  exposed-modules:     Data.Braille.Music
   default-language:    Haskell2010
