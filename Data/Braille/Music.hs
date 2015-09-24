@@ -10,7 +10,7 @@ import Control.Monad (guard)
 import Control.Monad.Trans.State (get, put, runStateT)
 import Data.Bits (setBit, testBit, (.&.))
 import Data.Functor (($>))
-import Data.List (intercalate)
+import Data.List (foldl', intercalate)
 import Data.Traversable (traverse)
 import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice, many1)
@@ -184,7 +184,7 @@ test = let l = 3/2 in
 
 class    Duration a              where dur :: a -> Maybe Rational
 instance Duration Sign           where dur = realValue
-instance Duration PartialVoice   where dur = foldl (liftA2 (+)) (pure 0) . map dur
+instance Duration PartialVoice   where dur = foldl' (liftA2 (+)) (pure 0) . map dur
 instance Duration PartialMeasure where dur pm = case pm of [] -> Nothing; otherwise -> dur (head pm)
-instance Duration Voice          where dur = foldl (liftA2 (+)) (pure 0) . map dur
+instance Duration Voice          where dur = foldl' (liftA2 (+)) (pure 0) . map dur
 instance Duration Measure        where dur m = case m of [] -> Nothing; otherwise -> dur (head m)
