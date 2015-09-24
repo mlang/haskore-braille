@@ -52,6 +52,8 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
   toBraille = toEnum . flip (-) 0x2800 . fromEnum
   isInUBrlBlock c = c >= 0x2800 && c <= 0x28FF
 
+-- With these primitives defined, we can move onto parsing Braille music input.
+
 type AugmentationDots = Int
 augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> pure n
 
@@ -133,6 +135,11 @@ type Measure = [Voice]
 
 measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
+-- With the basic data structure defined and parsed into, we can finally
+-- move towards the actually interesting task of disambiguating values.
+
+-- | Given a maximum time, return all possible interpretations
+-- of the given PartialVoice.
 pvs :: Rational -> PartialVoice -> [PartialVoice]
 pvs = curry $ map fst . runStateT (allWhich (large <|> small)) where
   allWhich p = do a <- p
@@ -142,7 +149,7 @@ pvs = curry $ map fst . runStateT (allWhich (large <|> small)) where
                              otherwise -> (a ++) <$> allWhich p
   large  = one 0
   small  = one 4
-  -- ...
+  -- ... Move rules to come which will eventually return lists with length > 1.
   one o  = do (l, x:xs) <- get
               let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
               put (l-v, xs)
@@ -156,13 +163,21 @@ vs l []     = return []
 vs l (x:xs) = do pm <- pms l x
                  maybe [] (\d -> (pm :) <$> vs (l - d) xs) (dur pm)
 
+-- | Given the current time signature (meter), return a list of all possible
+-- interpretations of the given measure.
 ms :: Rational -> Measure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
 
+-- Apparently inefficient helper.
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
+-- | Test measure disambiguation.
 testms l s = ms l <$> parse measureP "" s
 
+-- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
+-- In general, music with meter > 1 is more time-consuming because
+-- 16th notes can also be interpreted as whole notes, and whole notes fit
+-- into meter > 1.
 test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
           return $ length $ filter (== (Just l)) $ map dur candidates
