@@ -6,7 +6,7 @@ module Data.Braille.Music (
   augmentationDotsFactor
 ) where
 
-import Control.Applicative (pure, liftA2, (<$>), (<*>), (*>), (<|>))
+import Control.Applicative (many, pure, some, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
 import Control.Monad.Trans.State (get, put, runStateT)
 import Data.Bits (setBit, testBit, (.&.))
@@ -14,7 +14,7 @@ import Data.Functor (($>))
 import Data.List (foldl', intercalate)
 import Data.Traversable (traverse)
 import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
-import Text.Parsec.Combinator (choice, many1)
+import Text.Parsec.Combinator (choice)
 import Text.Parsec.String (Parser)
 
 -- Braille music code only uses the old 6-dot system.  We enumerate all
@@ -56,7 +56,7 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
 -- With these primitives defined, we can move onto parsing Braille music input.
 
 type AugmentationDots = Int
-augmentationDotsP = scan 0 where scan n = brl Dot3 *> scan (succ n) <|> pure n
+augmentationDotsP = length <$> many (brl Dot3)
 
 -- Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically calculate the real values of notes and rests.
@@ -115,7 +115,7 @@ rest = AmbiguousRest <$> ambiguousValueP <*> augmentationDotsP where
 -- span just across a part of the whole measure.
 type AmbiguousPartialVoice = [AmbiguousSign]
 
-partialVoiceP = many1 $ note <|> rest
+partialVoiceP = some $ note <|> rest
 
 -- | A partial measure contains parallel partial voices.
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
