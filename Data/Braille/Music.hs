@@ -178,8 +178,8 @@ pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   allWhich p = do a <- p
                   (l,xs) <- get
                   guard (l >= 0)
-                  case xs of []        -> return a
-                             otherwise -> (a ++) <$> allWhich p
+                  case xs of [] -> return a
+                             _  -> (a ++) <$> allWhich p
   large  = one 0
   small  = one 4
   -- ... Move rules to come which will eventually return lists with length > 1.
@@ -187,8 +187,7 @@ pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
               let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
               put (l-v, xs)
               return [mkSign v x]
-  mkPV signs = PartialVoice (sumDurations signs) signs where
-    sumDurations = sum . map realValue
+  mkPV signs = PartialVoice (sum $ map dur signs) signs
 
 pms :: Rational -> AmbiguousPartialMeasure -> [PartialMeasure]
 pms l = filter allEqDur . traverse (pvs l)
@@ -219,10 +218,20 @@ test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
           return $ length $ filter (== l) $ map dur candidates
 
-class    Duration a              where dur :: a -> Rational
-instance Duration Sign           where
+class Duration a where
+  dur :: a -> Rational
+
+instance Duration Sign where
   dur sign = realValue sign * augmentationDotsFactor (augmentationDots sign)
-instance Duration PartialVoice   where dur (PartialVoice d _) = d
-instance Duration PartialMeasure where dur = dur . head
-instance Duration Voice          where dur = foldl' (+) 0 . map dur
-instance Duration Measure        where dur = dur . head
+
+instance Duration PartialVoice where
+  dur (PartialVoice d _) = d
+
+instance Duration PartialMeasure where
+  dur = dur . head
+
+instance Duration Voice where
+  dur = sum . map dur
+
+instance Duration Measure where
+  dur = dur . head
