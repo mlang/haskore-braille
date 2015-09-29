@@ -223,7 +223,8 @@ class Duration a where
   dur :: a -> Rational
 
 instance Duration Sign where
-  dur sign = realValue sign * augmentationDotsFactor (augmentationDots sign)
+  dur = product . flip map factors . flip ($) where
+    factors = [realValue, augmentationDotsFactor . augmentationDots]
 
 instance Duration PartialVoice where
   dur (PartialVoice d _) = d
