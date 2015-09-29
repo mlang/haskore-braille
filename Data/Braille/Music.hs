@@ -2,7 +2,8 @@
 module Data.Braille.Music (
   Sign(..), AmbiguousValue(..), Step(..), AugmentationDots,
   dur,
-  Measure, testms, test
+  Measure, testms, test,
+  augmentationDotsFactor
 ) where
 
 import Control.Applicative (pure, liftA2, (<$>), (<*>), (*>), (<|>))
@@ -208,6 +209,8 @@ allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 -- | Test measure disambiguation.
 testms l s = ms l <$> parse measureP "" s
 
+augmentationDotsFactor dots = pred (2 ^ succ dots) / (2 ^ dots)
+
 -- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
 -- In general, music with meter > 1 is more time-consuming because
 -- 16th notes can also be interpreted as whole notes, and whole notes fit
@@ -217,7 +220,8 @@ test = let l = 3/2 in
           return $ length $ filter (== l) $ map dur candidates
 
 class    Duration a              where dur :: a -> Rational
-instance Duration Sign           where dur = realValue
+instance Duration Sign           where
+  dur sign = realValue sign * augmentationDotsFactor (augmentationDots sign)
 instance Duration PartialVoice   where dur (PartialVoice d _) = d
 instance Duration PartialMeasure where dur = dur . head
 instance Duration Voice          where dur = foldl' (+) 0 . map dur
