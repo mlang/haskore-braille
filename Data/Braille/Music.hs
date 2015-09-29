@@ -185,8 +185,9 @@ pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   -- ... Move rules to come which will eventually return lists with length > 1.
   one o  = do (l, x:xs) <- get
               let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
-              put (l-v, xs)
-              return [mkSign v x]
+              let sign = mkSign v x
+              put (l - dur sign, xs)
+              return [sign]
   mkPV signs = PartialVoice (sum $ map dur signs) signs
 
 pms :: Rational -> AmbiguousPartialMeasure -> [PartialMeasure]
