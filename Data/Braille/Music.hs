@@ -67,25 +67,21 @@ data Step = C | D | E | F | G | A | B
           deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 -- | A Braille music symbol.
-data Sign = Note { ambiguousValue :: AmbiguousValue
-                 , realValue :: Maybe Rational
-                 , step :: Step
-                 , augmentationDots :: AugmentationDots
-                 }
-          | Rest { ambiguousValue :: AmbiguousValue
-                 , realValue :: Maybe Rational
-                 , augmentationDots :: AugmentationDots
-                 }
+data AmbiguousSign =
+     AmbiguousNote { ambiguousValue :: AmbiguousValue
+                   , ambiguousStep :: Step
+                   , ambiguousAugmentationDots :: AugmentationDots
+                   }
+   | AmbiguousRest { ambiguousValue :: AmbiguousValue
+                   , ambiguousAugmentationDots :: AugmentationDots
+                   }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
 -- | Parse a Braille music note.
-note :: Parser Sign
+note :: Parser AmbiguousSign
 note = try parseNote where
-  parseNote = Note <$> ambiguousValueP
-                   <*> pure Nothing
-                   <*> stepP
-                   <*> augmentationDotsP
+  parseNote = AmbiguousNote <$> ambiguousValueP <*> stepP <*> augmentationDotsP
                    <?> "note"
   ambiguousValueP = lookAhead $ anyBrl >>= getValue where
     getValue d = return $ case toEnum (fromEnum d .&. fromEnum Dot36) of
@@ -105,8 +101,8 @@ note = try parseNote where
               otherwise -> fail "Not a note"
 
 -- | Parse a Braille music rest.
-rest :: Parser Sign
-rest = Rest <$> ambiguousValueP <*> pure Nothing <*> augmentationDotsP where
+rest :: Parser AmbiguousSign
+rest = AmbiguousRest <$> ambiguousValueP <*> augmentationDotsP where
   ambiguousValueP = choice [ brl Dot134  $> WholeOr16th
                            , brl Dot136  $> HalfOr32th
                            , brl Dot1236 $> QuarterOr64th
@@ -116,32 +112,68 @@ rest = Rest <$> ambiguousValueP <*> pure Nothing <*> augmentationDotsP where
 -- A Braille music measure can contain parallel and sequential music.
 -- The inner most voice is called partial voice because it can potentially
 -- span just across a part of the whole measure.
-type PartialVoice = [Sign]
+type AmbiguousPartialVoice = [AmbiguousSign]
 
 partialVoiceP = many1 $ note <|> rest
 
 -- | A partial measure contains parallel partial voices.
-type PartialMeasure = [PartialVoice]
+type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
 
 partialMeasureP = sepBy partialVoiceP $ brl Dot5 *> brl Dot2
 
 -- | A voice consists of one or more partial measures.
-type Voice = [PartialMeasure]
+type AmbiguousVoice = [AmbiguousPartialMeasure]
 
 voiceP = sepBy partialMeasureP $ brl Dot46 *> brl Dot13
 
 -- | A measure contains several parallel voices.
-type Measure = [Voice]
+type AmbiguousMeasure = [AmbiguousVoice]
 
 measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
 -- With the basic data structure defined and parsed into, we can finally
 -- move towards the actually interesting task of disambiguating values.
 
+data Sign =
+     Note { originalValue :: AmbiguousValue
+          , realValue :: Rational
+          , step :: Step
+          , augmentationDots :: AugmentationDots
+          }
+   | Rest { originalValue :: AmbiguousValue
+          , realValue :: Rational
+          , augmentationDots :: AugmentationDots
+          }
+          -- more to be added (Chord, ...)
+          deriving (Eq, Show)
+
+mkSign rv (AmbiguousNote { ambiguousValue = v
+                         , ambiguousStep = s
+                         , ambiguousAugmentationDots = d
+                         }) =
+  Note { realValue = rv
+       , originalValue = v
+       , step = s
+       , augmentationDots = d
+       }
+
+mkSign rv (AmbiguousRest { ambiguousValue = v
+                         , ambiguousAugmentationDots = d
+                         }) =
+  Rest { realValue = rv
+       , originalValue = v
+       , augmentationDots = d
+       }
+
+data PartialVoice = PartialVoice Rational [Sign]
+type PartialMeasure = [PartialVoice]
+type Voice = [PartialMeasure]
+type Measure = [Voice]
+
 -- | Given a maximum time, return all possible interpretations
 -- of the given PartialVoice.
-pvs :: Rational -> PartialVoice -> [PartialVoice]
-pvs = curry $ map fst . runStateT (allWhich (large <|> small)) where
+pvs :: Rational -> AmbiguousPartialVoice -> [PartialVoice]
+pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   allWhich p = do a <- p
                   (l,xs) <- get
                   guard (l >= 0)
@@ -153,19 +185,21 @@ pvs = curry $ map fst . runStateT (allWhich (large <|> small)) where
   one o  = do (l, x:xs) <- get
               let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
               put (l-v, xs)
-              return [x { realValue = Just v }]
+              return [mkSign v x]
+  mkPV signs = PartialVoice (sumDurations signs) signs where
+    sumDurations = sum . map realValue
 
-pms :: Rational -> PartialMeasure -> [PartialMeasure]
+pms :: Rational -> AmbiguousPartialMeasure -> [PartialMeasure]
 pms l = filter allEqDur . traverse (pvs l)
 
-vs :: Rational -> Voice -> [Voice]
+vs :: Rational -> AmbiguousVoice -> [Voice]
 vs l []     = return []
 vs l (x:xs) = do pm <- pms l x
-                 maybe [] (\d -> (pm :) <$> vs (l - d) xs) (dur pm)
+                 (pm :) <$> vs (l - dur pm) xs
 
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Rational -> Measure -> [Measure]
+ms :: Rational -> AmbiguousMeasure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
 
 -- Apparently inefficient helper.
@@ -180,11 +214,11 @@ testms l s = ms l <$> parse measureP "" s
 -- into meter > 1.
 test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
-          return $ length $ filter (== (Just l)) $ map dur candidates
+          return $ length $ filter (== l) $ map dur candidates
 
-class    Duration a              where dur :: a -> Maybe Rational
+class    Duration a              where dur :: a -> Rational
 instance Duration Sign           where dur = realValue
-instance Duration PartialVoice   where dur = foldl' (liftA2 (+)) (pure 0) . map dur
-instance Duration PartialMeasure where dur pm = case pm of [] -> Nothing; otherwise -> dur (head pm)
-instance Duration Voice          where dur = foldl' (liftA2 (+)) (pure 0) . map dur
-instance Duration Measure        where dur m = case m of [] -> Nothing; otherwise -> dur (head m)
+instance Duration PartialVoice   where dur (PartialVoice d _) = d
+instance Duration PartialMeasure where dur = dur . head
+instance Duration Voice          where dur = foldl' (+) 0 . map dur
+instance Duration Measure        where dur = dur . head
