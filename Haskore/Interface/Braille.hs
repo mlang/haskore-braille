@@ -1,18 +1,16 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
-module Data.Braille.Music (
-  Sign(..), AmbiguousValue(..), Step(..), AugmentationDots,
-  dur,
-  Measure, testms, test,
-  augmentationDotsFactor
+module Haskore.Interface.Braille (
+  testms, test
 ) where
 
-import Control.Applicative (many, pure, some, (<$>), (<*>), (*>), (<|>))
+import Control.Applicative (many, some, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
 import Control.Monad.Trans.State (get, put, runStateT)
-import Data.Bits (setBit, testBit, (.&.))
+import Data.Bits ((.&.))
 import Data.Functor (($>))
-import Data.List (foldl', intercalate)
+import Data.Monoid (mappend)
 import Data.Traversable (traverse)
+import qualified Haskore.Basic.Pitch as Pitch (Class(..), transpose)
 import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
 import Text.Parsec.String (Parser)
@@ -56,6 +54,7 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
 -- With these primitives defined, we can move onto parsing Braille music input.
 
 type AugmentationDots = Int
+augmentationDotsP :: Parser AugmentationDots
 augmentationDotsP = length <$> many (brl Dot3)
 
 -- Braille music is inherently ambiguous.  The time signature is necessary
@@ -63,14 +62,10 @@ augmentationDotsP = length <$> many (brl Dot3)
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
                     deriving (Enum, Eq, Show)
 
--- | The pitch class.
-data Step = C | D | E | F | G | A | B
-          deriving (Bounded, Enum, Eq, Ord, Read, Show)
-
 -- | A Braille music symbol.
 data AmbiguousSign =
      AmbiguousNote { ambiguousValue :: AmbiguousValue
-                   , ambiguousStep :: Step
+                   , ambiguousStep :: Pitch.Class
                    , ambiguousAugmentationDots :: AugmentationDots
                    }
    | AmbiguousRest { ambiguousValue :: AmbiguousValue
@@ -90,16 +85,17 @@ note = try parseNote where
                           Dot3   -> HalfOr32th
                           Dot6   -> QuarterOr64th
                           NoDots -> EighthOr128th
+                          _      -> error "Unreachable"
   stepP = anyBrl >>= check where
     check d = case toEnum (fromEnum d .&. fromEnum Dot1245) of
-              Dot145    -> return C
-              Dot15     -> return D
-              Dot124    -> return E
-              Dot1245   -> return F
-              Dot125    -> return G
-              Dot24     -> return A
-              Dot245    -> return B
-              otherwise -> fail "Not a note"
+              Dot145  -> return Pitch.C
+              Dot15   -> return Pitch.D
+              Dot124  -> return Pitch.E
+              Dot1245 -> return Pitch.F
+              Dot125  -> return Pitch.G
+              Dot24   -> return Pitch.A
+              Dot245  -> return Pitch.B
+              _       -> fail "Not a note"
 
 -- | Parse a Braille music rest.
 rest :: Parser AmbiguousSign
@@ -115,21 +111,25 @@ rest = AmbiguousRest <$> ambiguousValueP <*> augmentationDotsP where
 -- span just across a part of the whole measure.
 type AmbiguousPartialVoice = [AmbiguousSign]
 
+partialVoiceP :: Parser AmbiguousPartialVoice
 partialVoiceP = some $ note <|> rest
 
 -- | A partial measure contains parallel partial voices.
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
 
+partialMeasureP :: Parser AmbiguousPartialMeasure
 partialMeasureP = sepBy partialVoiceP $ brl Dot5 *> brl Dot2
 
 -- | A voice consists of one or more partial measures.
 type AmbiguousVoice = [AmbiguousPartialMeasure]
 
+voiceP :: Parser AmbiguousVoice
 voiceP = sepBy partialMeasureP $ brl Dot46 *> brl Dot13
 
 -- | A measure contains several parallel voices.
 type AmbiguousMeasure = [AmbiguousVoice]
 
+measureP :: Parser AmbiguousMeasure
 measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 
 -- With the basic data structure defined and parsed into, we can finally
@@ -138,7 +138,7 @@ measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 data Sign =
      Note { originalValue :: AmbiguousValue
           , realValue :: Rational
-          , step :: Step
+          , step :: Pitch.Class
           , augmentationDots :: AugmentationDots
           }
    | Rest { originalValue :: AmbiguousValue
@@ -148,6 +148,7 @@ data Sign =
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
+mkSign :: Rational -> AmbiguousSign -> Sign
 mkSign rv (AmbiguousNote { ambiguousValue = v
                          , ambiguousStep = s
                          , ambiguousAugmentationDots = d
@@ -157,7 +158,6 @@ mkSign rv (AmbiguousNote { ambiguousValue = v
        , step = s
        , augmentationDots = d
        }
-
 mkSign rv (AmbiguousRest { ambiguousValue = v
                          , ambiguousAugmentationDots = d
                          }) =
@@ -178,8 +178,7 @@ pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   allWhich p = do a <- p
                   (l,xs) <- get
                   guard (l >= 0)
-                  case xs of [] -> return a
-                             _  -> (a ++) <$> allWhich p
+                  if not $ null xs then (mappend a) <$> allWhich p else return a
   large  = one 0
   small  = one 4
   -- ... Move rules to come which will eventually return lists with length > 1.
@@ -194,7 +193,7 @@ pms :: Rational -> AmbiguousPartialMeasure -> [PartialMeasure]
 pms l = filter allEqDur . traverse (pvs l)
 
 vs :: Rational -> AmbiguousVoice -> [Voice]
-vs l []     = return []
+vs _ []     = return []
 vs l (x:xs) = do pm <- pms l x
                  (pm :) <$> vs (l - dur pm) xs
 
@@ -204,6 +203,7 @@ ms :: Rational -> AmbiguousMeasure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
 
 -- Apparently inefficient helper.
+allEqDur :: Duration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 -- | Test measure disambiguation.
