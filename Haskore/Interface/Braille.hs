@@ -3,17 +3,17 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import Control.Applicative (many, some, (<$>), (<*>), (*>), (<|>))
+import Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
 import Control.Monad.Trans.State (get, gets, put, runStateT)
 import Data.Bits ((.&.))
 import Data.Functor (($>))
 import Data.Monoid (mappend)
 import Data.Traversable (traverse)
-import qualified Haskore.Basic.Pitch as Pitch (Class(..), transpose)
+import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, transpose)
 import qualified Haskore.Basic.Duration as Duration (T)
 import Haskore.Basic.Duration as Duration ((%+))
-import Text.Parsec (lookAhead, parse, satisfy, sepBy, try, (<?>))
+import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
 import Text.Parsec.String (Parser)
 
@@ -59,6 +59,18 @@ type AugmentationDots = Int
 augmentationDotsP :: Parser AugmentationDots
 augmentationDotsP = length <$> many (brl Dot3)
 
+octaveP :: Parser Pitch.Octave
+octaveP = choice [ try (brl Dot4 *> brl Dot4) $> 0
+                 , brl Dot4                   $> 1
+                 , brl Dot45                  $> 2
+                 , brl Dot456                 $> 3
+                 , brl Dot5                   $> 4
+                 , brl Dot46                  $> 5
+                 , brl Dot56                  $> 6
+                 , brl Dot6                   $> 7
+                 , try (brl Dot6 *> brl Dot6) $> 8
+                 ]
+
 -- Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically calculate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
@@ -66,12 +78,17 @@ data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
 
 -- | A Braille music symbol.
 data AmbiguousSign =
-     AmbiguousNote { ambiguousValue :: AmbiguousValue
-                   , ambiguousStep :: Pitch.Class
+     AmbiguousNote { ambiguousBegin            :: SourcePos
+                   , ambiguousOctave           :: Maybe Pitch.Octave
+                   , ambiguousValue            :: AmbiguousValue
+                   , ambiguousStep             :: Pitch.Class
                    , ambiguousAugmentationDots :: AugmentationDots
+                   , ambiguousEnd              :: SourcePos
                    }
-   | AmbiguousRest { ambiguousValue :: AmbiguousValue
+   | AmbiguousRest { ambiguousBegin            :: SourcePos
+                   , ambiguousValue            :: AmbiguousValue
                    , ambiguousAugmentationDots :: AugmentationDots
+                   , ambiguousEnd              :: SourcePos
                    }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
@@ -79,17 +96,22 @@ data AmbiguousSign =
 -- | Parse a Braille music note.
 note :: Parser AmbiguousSign
 note = try parseNote where
-  parseNote = AmbiguousNote <$> ambiguousValueP <*> stepP <*> augmentationDotsP
-                   <?> "note"
+  parseNote = AmbiguousNote <$> getPosition
+                            <*> optional octaveP
+                            <*> ambiguousValueP
+                            <*> stepP
+                            <*> augmentationDotsP
+                            <*> getPosition
+                            <?> "note"
   ambiguousValueP = lookAhead $ anyBrl >>= getValue where
-    getValue d = return $ case toEnum (fromEnum d .&. fromEnum Dot36) of
+    getValue d = return $ case mask Dot36 d of
                           Dot36  -> WholeOr16th
                           Dot3   -> HalfOr32th
                           Dot6   -> QuarterOr64th
                           NoDots -> EighthOr128th
                           _      -> error "Unreachable"
   stepP = anyBrl >>= check where
-    check d = case toEnum (fromEnum d .&. fromEnum Dot1245) of
+    check d = case mask Dot1245 d of
               Dot145  -> return Pitch.C
               Dot15   -> return Pitch.D
               Dot124  -> return Pitch.E
@@ -98,10 +120,14 @@ note = try parseNote where
               Dot24   -> return Pitch.A
               Dot245  -> return Pitch.B
               _       -> fail "Not a note"
+  mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
 -- | Parse a Braille music rest.
 rest :: Parser AmbiguousSign
-rest = AmbiguousRest <$> ambiguousValueP <*> augmentationDotsP where
+rest = AmbiguousRest <$> getPosition
+                     <*> ambiguousValueP
+                     <*> augmentationDotsP
+                     <*> getPosition where
   ambiguousValueP = choice [ brl Dot134  $> WholeOr16th
                            , brl Dot136  $> HalfOr32th
                            , brl Dot1236 $> QuarterOr64th
