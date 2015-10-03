@@ -10,7 +10,7 @@ import Data.Bits ((.&.))
 import Data.Functor (($>))
 import Data.Monoid (mappend)
 import Data.Traversable (traverse)
-import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, transpose)
+import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Music as Music (Dur)
 import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
@@ -70,15 +70,29 @@ a_n=a\left(1 + \tfrac 12 + \tfrac 14 + \cdots + \tfrac 1{2^n}\right)=a(2-\frac 1
 augmentationDotsFactor :: AugmentationDots -> Music.Dur
 augmentationDotsFactor n = 2 - 1 / (2^n)
 
+data Accidental = DoubleFlat | Flat | Natural | Sharp | DoubleSharp
+                deriving (Enum, Eq, Show, Read)
+
+accidentalP :: Parser Accidental
+accidentalP = choice [ try (brl Dot126 *> brl Dot126) $> DoubleFlat
+                     ,      brl Dot126                $> Flat
+                     ,      brl Dot16                 $> Natural
+                     ,      brl Dot146                $> Sharp
+                     , try (brl Dot146 *> brl Dot146) $> DoubleSharp
+                     ]
+
+fromAccidental :: Accidental -> Pitch.Relative
+fromAccidental a = fromEnum a - 2
+
 octaveP :: Parser Pitch.Octave
 octaveP = choice [ try (brl Dot4 *> brl Dot4) $> 0
-                 , brl Dot4                   $> 1
-                 , brl Dot45                  $> 2
-                 , brl Dot456                 $> 3
-                 , brl Dot5                   $> 4
-                 , brl Dot46                  $> 5
-                 , brl Dot56                  $> 6
-                 , brl Dot6                   $> 7
+                 ,      brl Dot4              $> 1
+                 ,      brl Dot45             $> 2
+                 ,      brl Dot456            $> 3
+                 ,      brl Dot5              $> 4
+                 ,      brl Dot46             $> 5
+                 ,      brl Dot56             $> 6
+                 ,      brl Dot6              $> 7
                  , try (brl Dot6 *> brl Dot6) $> 8
                  ]
 
@@ -90,6 +104,7 @@ data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
 -- | A Braille music symbol.
 data AmbiguousSign =
      AmbiguousNote { ambiguousBegin            :: SourcePos
+                   , ambiguousAccidental       :: Maybe Accidental
                    , ambiguousOctave           :: Maybe Pitch.Octave
                    , ambiguousValue            :: AmbiguousValue
                    , ambiguousStep             :: Pitch.Class
@@ -108,6 +123,7 @@ data AmbiguousSign =
 noteP :: Parser AmbiguousSign
 noteP = try parseNote where
   parseNote = AmbiguousNote <$> getPosition
+                            <*> optional accidentalP
                             <*> optional octaveP
                             <*> ambiguousValueP
                             <*> stepP
@@ -179,46 +195,53 @@ data Sign = Note { realValue :: Music.Dur, ambiguous :: AmbiguousSign }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
-mkSign :: Music.Dur -> AmbiguousSign -> Sign
-mkSign v n@(AmbiguousNote {}) = Note v n
-mkSign v r@(AmbiguousRest {}) = Rest v r
+data ValueKind = Large | Small deriving (Eq, Read, Show)
 
-data PartialVoice = PartialVoice Music.Dur [Sign]
+fromAmbiguousValue :: ValueKind -> AmbiguousValue -> Music.Dur
+fromAmbiguousValue Large WholeOr16th   = 1
+fromAmbiguousValue Large HalfOr32th    = 1 / 2
+fromAmbiguousValue Large QuarterOr64th = 1 / 4
+fromAmbiguousValue Large EighthOr128th = 1 / 8
+fromAmbiguousValue Small WholeOr16th   = 1 / 16
+fromAmbiguousValue Small HalfOr32th    = 1 / 32
+fromAmbiguousValue Small QuarterOr64th = 1 / 64
+fromAmbiguousValue Small EighthOr128th = 1 / 128
+
+large = fromAmbiguousValue Large
+small = fromAmbiguousValue Small
+
+mkSign :: (AmbiguousValue -> Music.Dur) -> AmbiguousSign -> Sign
+mkSign v n@(AmbiguousNote {}) = Note (v (ambiguousValue n)) n
+mkSign v r@(AmbiguousRest {}) = Rest (v (ambiguousValue r)) r
+
+data PartialVoice = PartialVoice Music.Dur [Sign] deriving (Eq, Show)
+
+mkPV :: [Sign] -> PartialVoice
+mkPV signs = PartialVoice (sum $ map dur signs) signs
+
 type PartialMeasure = [PartialVoice]
 type Voice = [PartialMeasure]
 type Measure = [Voice]
 
--- | Given a maximum time, return all possible interpretations
--- of the given PartialVoice.
-pvs :: Music.Dur -> AmbiguousPartialVoice -> [PartialVoice]
-pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
-  allWhich p = do a <- p
-                  xs <- gets snd
-                  if not $ null xs then mappend a <$> allWhich p else return a
-  large  = one 0
-  small  = one 4
-  -- ... Move rules to come which will eventually return lists with length > 1.
-  one o  = do (l, x:xs) <- get
-              let sign = mkSign (2 ^^ (-(o + fromEnum (ambiguousValue x)))) x
-              guard (l >= dur sign)
-              put (l - dur sign, xs)
-              return [sign]
-  mkPV signs = PartialVoice (sum $ map dur signs) signs
-
-pms :: Music.Dur -> AmbiguousPartialMeasure -> [PartialMeasure]
-pms l = filter allEqDur . traverse (pvs l)
-
-vs :: Music.Dur -> AmbiguousVoice -> [Voice]
-vs _ []     = return []
-vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs
-
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
 ms :: Music.Dur -> AmbiguousMeasure -> [Measure]
-ms l = filter allEqDur . traverse (vs l)
-
-allEqDur :: HasDuration a => [a] -> Bool
-allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
+ms l = filter allEqDur . traverse (vs l) where
+  allEqDur xs  = all ((== dur (head xs)) . dur) (tail xs)
+  vs _ []     = return []
+  vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs where
+    pms l = filter allEqDur . traverse (pvs l) where
+      pvs = curry $ map (mkPV . fst) . runStateT
+            (allWhich (one large <|> one small)) where
+        allWhich p = do a <- p
+                        xs <- gets snd
+                        if not $ null xs then mappend a <$> allWhich p else return a
+        -- ... Move rules to come which will eventually return lists with length > 1.
+        one mk = do (l, x:xs) <- get
+                    let sign = mkSign mk x
+                    guard (l >= dur sign)
+                    put (l - dur sign, xs)
+                    return [sign]
 
 -- | Test measure disambiguation.
 testms l s = ms l <$> parse measureP "" s
