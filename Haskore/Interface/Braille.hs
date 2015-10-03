@@ -11,8 +11,7 @@ import Data.Functor (($>))
 import Data.Monoid (mappend)
 import Data.Traversable (traverse)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, transpose)
-import qualified Haskore.Basic.Duration as Duration (T)
-import Haskore.Basic.Duration as Duration ((%+))
+import qualified Haskore.Music as Music (Dur)
 import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
 import Text.Parsec.String (Parser)
@@ -55,9 +54,21 @@ anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
 
 -- With these primitives defined, we can move onto parsing Braille music input.
 
+-- | In modern practice the first dot increases the duration of the basic note
+-- by half of its original value.  A dotted note is equivalent to writing
+-- the basic note tied to a note of half the value; or with more than one dot,
+-- tied to notes of progressively halved value.
 type AugmentationDots = Int
+
 augmentationDotsP :: Parser AugmentationDots
 augmentationDotsP = length <$> many (brl Dot3)
+
+{-
+The length of any given note a with n dots is therefore given by the geometric series
+a_n=a\left(1 + \tfrac 12 + \tfrac 14 + \cdots + \tfrac 1{2^n}\right)=a(2-\frac 1{2^n}).
+-}
+augmentationDotsFactor :: AugmentationDots -> Music.Dur
+augmentationDotsFactor n = 2 - 1 / (2^n)
 
 octaveP :: Parser Pitch.Octave
 octaveP = choice [ try (brl Dot4 *> brl Dot4) $> 0
@@ -71,7 +82,7 @@ octaveP = choice [ try (brl Dot4 *> brl Dot4) $> 0
                  , try (brl Dot6 *> brl Dot6) $> 8
                  ]
 
--- Braille music is inherently ambiguous.  The time signature is necessary
+-- | Braille music is inherently ambiguous.  The time signature is necessary
 -- to automatically calculate the real values of notes and rests.
 data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
                     deriving (Enum, Eq, Read, Show)
@@ -94,8 +105,8 @@ data AmbiguousSign =
           deriving (Eq, Show)
 
 -- | Parse a Braille music note.
-note :: Parser AmbiguousSign
-note = try parseNote where
+noteP :: Parser AmbiguousSign
+noteP = try parseNote where
   parseNote = AmbiguousNote <$> getPosition
                             <*> optional octaveP
                             <*> ambiguousValueP
@@ -123,24 +134,24 @@ note = try parseNote where
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
 -- | Parse a Braille music rest.
-rest :: Parser AmbiguousSign
-rest = AmbiguousRest <$> getPosition
-                     <*> ambiguousValueP
-                     <*> augmentationDotsP
-                     <*> getPosition where
+restP :: Parser AmbiguousSign
+restP = AmbiguousRest <$> getPosition
+                      <*> ambiguousValueP
+                      <*> augmentationDotsP
+                      <*> getPosition where
   ambiguousValueP = choice [ brl Dot134  $> WholeOr16th
                            , brl Dot136  $> HalfOr32th
                            , brl Dot1236 $> QuarterOr64th
                            , brl Dot1346 $> EighthOr128th
                            ]
 
--- A Braille music measure can contain parallel and serial music.
+-- | A Braille music measure can contain parallel and serial music.
 -- The inner most voice is called partial voice because it can potentially
 -- span just across a part of the whole measure.
 type AmbiguousPartialVoice = [AmbiguousSign]
 
 partialVoiceP :: Parser AmbiguousPartialVoice
-partialVoiceP = some $ note <|> rest
+partialVoiceP = some $ noteP <|> restP
 
 -- | A partial measure contains parallel partial voices.
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
@@ -163,23 +174,23 @@ measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
 -- With the basic data structure defined and parsed into, we can finally
 -- move towards the actually interesting task of disambiguating values.
 
-data Sign = Note { realValue :: Duration.T, ambiguous :: AmbiguousSign }
-          | Rest { realValue :: Duration.T, ambiguous :: AmbiguousSign }
+data Sign = Note { realValue :: Music.Dur, ambiguous :: AmbiguousSign }
+          | Rest { realValue :: Music.Dur, ambiguous :: AmbiguousSign }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
-mkSign :: Duration.T -> AmbiguousSign -> Sign
+mkSign :: Music.Dur -> AmbiguousSign -> Sign
 mkSign v n@(AmbiguousNote {}) = Note v n
 mkSign v r@(AmbiguousRest {}) = Rest v r
 
-data PartialVoice = PartialVoice Duration.T [Sign]
+data PartialVoice = PartialVoice Music.Dur [Sign]
 type PartialMeasure = [PartialVoice]
 type Voice = [PartialMeasure]
 type Measure = [Voice]
 
 -- | Given a maximum time, return all possible interpretations
 -- of the given PartialVoice.
-pvs :: Duration.T -> AmbiguousPartialVoice -> [PartialVoice]
+pvs :: Music.Dur -> AmbiguousPartialVoice -> [PartialVoice]
 pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   allWhich p = do a <- p
                   xs <- gets snd
@@ -188,23 +199,22 @@ pvs = curry $ map (mkPV . fst) . runStateT (allWhich (large <|> small)) where
   small  = one 4
   -- ... Move rules to come which will eventually return lists with length > 1.
   one o  = do (l, x:xs) <- get
-              let v = 2 ^^ (-(o + fromEnum (ambiguousValue x)))
-              let sign = mkSign v x
+              let sign = mkSign (2 ^^ (-(o + fromEnum (ambiguousValue x)))) x
               guard (l >= dur sign)
               put (l - dur sign, xs)
               return [sign]
   mkPV signs = PartialVoice (sum $ map dur signs) signs
 
-pms :: Duration.T -> AmbiguousPartialMeasure -> [PartialMeasure]
+pms :: Music.Dur -> AmbiguousPartialMeasure -> [PartialMeasure]
 pms l = filter allEqDur . traverse (pvs l)
 
-vs :: Duration.T -> AmbiguousVoice -> [Voice]
+vs :: Music.Dur -> AmbiguousVoice -> [Voice]
 vs _ []     = return []
 vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs
 
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Duration.T -> AmbiguousMeasure -> [Measure]
+ms :: Music.Dur -> AmbiguousMeasure -> [Measure]
 ms l = filter allEqDur . traverse (vs l)
 
 allEqDur :: HasDuration a => [a] -> Bool
@@ -212,9 +222,6 @@ allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 -- | Test measure disambiguation.
 testms l s = ms l <$> parse measureP "" s
-
-augmentationDotsFactor :: Integral a => a -> Duration.T
-augmentationDotsFactor dots = pred (2 ^ succ dots) %+ (2 ^ dots)
 
 -- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
 -- In general, music with meter > 1 is more time-consuming because
@@ -225,7 +232,7 @@ test = let l = 3/2 in
           return $ length $ filter (== l) $ map dur candidates
 
 class HasDuration a where
-  dur :: a -> Duration.T
+  dur :: a -> Music.Dur
 
 instance HasDuration Sign where
   -- | The duration of a disambiguated sign is the product of its value,
