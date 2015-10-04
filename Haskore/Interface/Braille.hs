@@ -14,6 +14,7 @@ import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, tran
 import qualified Haskore.Music as Music (Dur)
 import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
+import Text.Parsec.Error (ParseError)
 import Text.Parsec.String (Parser)
 
 -- Braille music code only uses the old 6-dot system.  We enumerate all
@@ -81,8 +82,8 @@ accidentalP = choice [ try (brl Dot126 *> brl Dot126) $> DoubleFlat
                      , try (brl Dot146 *> brl Dot146) $> DoubleSharp
                      ]
 
-fromAccidental :: Accidental -> Pitch.Relative
-fromAccidental a = fromEnum a - 2
+alter :: Accidental -> Pitch.Relative
+alter a = fromEnum a - 2
 
 octaveP :: Parser Pitch.Octave
 octaveP = choice [ try (brl Dot4 *> brl Dot4) $> 0
@@ -207,6 +208,7 @@ fromAmbiguousValue Small HalfOr32th    = 1 / 32
 fromAmbiguousValue Small QuarterOr64th = 1 / 64
 fromAmbiguousValue Small EighthOr128th = 1 / 128
 
+large, small :: AmbiguousValue -> Music.Dur
 large = fromAmbiguousValue Large
 small = fromAmbiguousValue Small
 
@@ -227,29 +229,42 @@ type Measure = [Voice]
 -- interpretations of the given measure.
 ms :: Music.Dur -> AmbiguousMeasure -> [Measure]
 ms l = filter allEqDur . traverse (vs l) where
-  allEqDur xs  = all ((== dur (head xs)) . dur) (tail xs)
+  allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
   vs _ []     = return []
   vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs where
     pms l = filter allEqDur . traverse (pvs l) where
-      pvs = curry $ map (mkPV . fst) . runStateT
-            (allWhich (one large <|> one small)) where
+      pvs = curry $ map (mkPV . fst) . runStateT interpretations where
+        interpretations = allWhich $ notegroup <|> one large <|> one small
         allWhich p = do a <- p
-                        xs <- gets snd
-                        if not $ null xs then mappend a <$> allWhich p else return a
+                        eoi <- gets $ null . snd
+                        if not eoi then mappend a <$> allWhich p else return a
         -- ... Move rules to come which will eventually return lists with length > 1.
         one mk = do (l, x:xs) <- get
                     let sign = mkSign mk x
                     guard (l >= dur sign)
                     put (l - dur sign, xs)
                     return [sign]
+        notegroup = do (l, x:xs) <- get
+                       let a = mkSign small x
+                       let (as,xs') = span isTail xs
+                       guard $ length as >= 3
+                       let candids = a : map (mkSign (const (realValue a))) as
+                       let d = sum $ map dur candids
+                       guard $ l >= d
+                       put (l - d, xs')
+                       return candids where
+          isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
+          isTail _ = False                                  
 
 -- | Test measure disambiguation.
+testms :: Music.Dur -> String -> Either ParseError [Measure]
 testms l s = ms l <$> parse measureP "" s
 
 -- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
 -- In general, music with meter > 1 is more time-consuming because
 -- 16th notes can also be interpreted as whole notes, and whole notes fit
 -- into meter > 1.
+test :: Either ParseError Int
 test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
           return $ length $ filter (== l) $ map dur candidates
@@ -261,11 +276,8 @@ instance HasDuration Sign where
   -- | The duration of a disambiguated sign is the product of its value,
   -- the augmentation dots factor, and (unimplemented) stretch factor from tuplets
   -- or multi meter parallel staves.
-  dur = product . flip map factors . flip ($) where
-    factors = [ realValue
-              , augmentationDotsFactor . ambiguousAugmentationDots . ambiguous
-              -- tuplet factor here
-              ]
+  dur = (*) <$> realValue
+            <*> augmentationDotsFactor . ambiguousAugmentationDots . ambiguous
 
 instance HasDuration PartialVoice where
   dur (PartialVoice d _) = d -- avoid recomputing duration
