@@ -5,7 +5,11 @@ module Haskore.Interface.Braille (
 
 import Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
 import Control.Monad (guard)
-import Control.Monad.Trans.State (get, gets, put, runStateT)
+import Control.Monad.Error (throwError)
+import Control.Monad.Identity (Identity(..))
+import Control.Monad.Trans.Except (ExceptT(..))
+import Control.Monad.Trans.List (ListT(..))
+import Control.Monad.Trans.State (StateT(..), get, gets, put)
 import Data.Bits ((.&.))
 import Data.Functor (($>))
 import Data.Monoid (mappend)
@@ -255,6 +259,16 @@ ms l = filter allEqDur . traverse (vs l) where
                        return candids where
           isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
           isTail _ = False                                  
+
+type Disambiguator s e a = StateT s (ListT (ExceptT e Identity)) a
+runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
+runDisambiguator m s = runIdentity $ runExceptT $ runListT $ runStateT m s
+
+-- | Like 'span' but gives all combinations till predicate fails.
+spans :: (a -> Bool) -> [a] -> [([a], [a])]
+spans = go [] where
+  go _ _ []     = []
+  go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
 
 -- | Test measure disambiguation.
 testms :: Music.Dur -> String -> Either ParseError [Measure]
