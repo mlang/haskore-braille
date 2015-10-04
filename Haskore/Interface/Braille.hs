@@ -1,15 +1,14 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
-module Haskore.Interface.Braille (
-  testms, test
-) where
+module Haskore.Interface.Braille () where
 
 import Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
-import Control.Monad (guard)
+import Control.Monad (liftM, guard)
 import Control.Monad.Error (throwError)
 import Control.Monad.Identity (Identity(..))
+import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT(..))
 import Control.Monad.Trans.List (ListT(..))
-import Control.Monad.Trans.State (StateT(..), get, gets, put)
+import Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, modify, put)
 import Data.Bits ((.&.))
 import Data.Functor (($>))
 import Data.Monoid (mappend)
@@ -231,13 +230,23 @@ type Measure = [Voice]
 
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Music.Dur -> AmbiguousMeasure -> [Measure]
-ms l = filter allEqDur . traverse (vs l) where
-  allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
-  vs _ []     = return []
-  vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs where
-    pms l = filter allEqDur . traverse (pvs l) where
-      pvs = curry $ map (mkPV . fst) . runStateT interpretations where
+ms :: Music.Dur -> AmbiguousMeasure -> Either e [Measure]
+ms l = liftM (filter allEqDur . sequence) . traverse (vs l)
+
+allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
+
+vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
+vs l = (`evalStateT` l) . mapM v
+
+v x = do l <- get
+         pm <- lift $ pms l x
+         put (l - dur pm)
+         return pm
+
+pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
+pms l pm = traverse (pvs l) pm >>= return . filter allEqDur . sequence
+
+pvs l pv = runDisambiguator interpretations (l, pv) >>= return . map (mkPV . fst) where
         interpretations = allWhich $ notegroup <|> one large <|> one small
         allWhich p = do a <- p
                         eoi <- gets $ null . snd
@@ -264,6 +273,8 @@ type Disambiguator s e a = StateT s (ListT (ExceptT e Identity)) a
 runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
 runDisambiguator m = runIdentity . runExceptT . runListT . runStateT m
 
+testvs = either (const []) id $ vs 0.5 <$> either (const []) id $ parse voiceP "" "⠺⠪⠐⠂⠺⠪⠨⠅⠺⠪"
+
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
 spans = go [] where
@@ -271,17 +282,17 @@ spans = go [] where
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
 
 -- | Test measure disambiguation.
-testms :: Music.Dur -> String -> Either ParseError [Measure]
-testms l s = ms l <$> parse measureP "" s
+--testms :: Music.Dur -> String -> Either ParseError [Measure]
+--testms l s = ms l <$> parse measureP "" s
 
 -- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
 -- In general, music with meter > 1 is more time-consuming because
 -- 16th notes can also be interpreted as whole notes, and whole notes fit
 -- into meter > 1.
-test :: Either ParseError Int
-test = let l = 3/2 in
-       do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
-          return $ length $ filter (== l) $ map dur candidates
+--test :: Either ParseError Int
+--test = let l = 3/2 in
+--       do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
+--          return $ length $ filter (== l) $ map dur candidates
 
 class HasDuration a where
   dur :: a -> Music.Dur
