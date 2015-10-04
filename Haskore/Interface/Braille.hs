@@ -262,7 +262,7 @@ ms l = filter allEqDur . traverse (vs l) where
 
 type Disambiguator s e a = StateT s (ListT (ExceptT e Identity)) a
 runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
-runDisambiguator m s = runIdentity $ runExceptT $ runListT $ runStateT m s
+runDisambiguator m = runIdentity . runExceptT . runListT . runStateT m
 
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
