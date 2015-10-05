@@ -255,31 +255,36 @@ pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequence) . traverse (pvs l)
 
 pvs :: Music.Dur -> AmbiguousPartialVoice -> Either e [PartialVoice]
-pvs = curry $ fmap (map mkPV) . runListT . evalStateT interpretations where
-  interpretations = allWhich $ notegroup <|> one large <|> one small
-  allWhich p = do a <- p
-                  eoi <- gets $ null . snd
-                  if not eoi then mappend a <$> allWhich p else return a
-  one mk = do (l, x:xs) <- get
-              let sign = mkSign mk x
-              guard (l >= dur sign)
-              put (l - dur sign, xs)
-              return [sign]
-  notegroup = do (l, x:xs) <- get
-                 let a = mkSign small x
-                 let (as,xs') = span isTail xs
-                 guard $ length as >= 3
-                 let candids = a : map (mkSign (const (realValue a))) as
-                 let d = sum $ map dur candids
-                 guard $ l >= d
-                 put (l - d, xs')
-                 return candids where
-    isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
-    isTail _ = False                                  
+pvs = curry $ fmap (map mkPV) . runListT . evalStateT
+              (allWhich $ notegroup <|> one large <|> one small)
 
 type Disambiguator s e a = StateT s (ListT (Either e)) a
-runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
-runDisambiguator m = runListT . runStateT m
+type PVDisambiguator e = Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
+
+allWhich :: PVDisambiguator e -> PVDisambiguator e
+allWhich p = do a <- p
+                eoi <- gets $ null . snd
+                if not eoi then mappend a <$> allWhich p else return a
+
+one :: (AmbiguousValue -> MIDIMusic.Dur) -> PVDisambiguator e
+one mk = do (l, x:xs) <- get
+            let sign = mkSign mk x
+            guard (l >= dur sign)
+            put (l - dur sign, xs)
+            return [sign]
+
+notegroup :: PVDisambiguator e
+notegroup = do (l, x:xs) <- get
+               let a = mkSign small x
+               let (as,xs') = span isTail xs
+               guard $ length as >= 3
+               let candids = a : map (mkSign (const (realValue a))) as
+               let d = sum $ map dur candids
+               guard $ l >= d
+               put (l - d, xs')
+               return candids where
+  isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
+  isTail _ = False                                  
 
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
