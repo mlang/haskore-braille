@@ -260,9 +260,9 @@ ms l = filter allEqDur . traverse (vs l) where
           isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
           isTail _ = False                                  
 
-type Disambiguator s e a = StateT s (ListT (ExceptT e Identity)) a
+type Disambiguator s e a = StateT s (ListT (Either e)) a
 runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
-runDisambiguator m = runIdentity . runExceptT . runListT . runStateT m
+runDisambiguator m = runListT . runStateT m
 
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
