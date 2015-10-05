@@ -15,7 +15,14 @@ import Data.Functor (($>))
 import Data.Monoid (mappend)
 import Data.Traversable (traverse)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
-import qualified Haskore.Music as Music (Dur)
+import qualified Haskore.Interface.MIDI.Render as MIDIRender
+import qualified Haskore.Melody.Standard as Melody (T, na)
+import qualified Haskore.Melody as Melody (note)
+import qualified Haskore.Music as Music (Dur, chord, line, rest)
+import Haskore.Music as Music ((+:+), (=:=))
+import qualified Haskore.Music.GeneralMIDI     as MIDIMusic
+import qualified Haskore.Process.Optimization  as Optimize
+import qualified Sound.MIDI.File.Save          as SaveMIDI
 import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import Text.Parsec.Combinator (choice)
 import Text.Parsec.Error (ParseError)
@@ -278,10 +285,27 @@ testms l s = ms l <$> parse measureP "" s
 -- In general, music with meter > 1 is more time-consuming because
 -- 16th notes can also be interpreted as whole notes, and whole notes fit
 -- into meter > 1.
-test :: Either ParseError Int
+
 test = let l = 3/2 in
-       do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
-          return $ length $ filter (== l) $ map dur candidates
+       do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠨⠅⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
+          return $ filter ((== l) . dur) candidates
+
+measureToHaskore :: Measure -> Melody.T
+measureToHaskore = Optimize.all . Music.chord . map v where
+  v = Music.line . map pm where
+    pm = Music.chord . map pv where
+      pv (PartialVoice _ xs) = Music.line $ map conv xs where
+        conv (Rest d _) = Music.rest d
+        conv (Note d u) = Melody.note (1, ambiguousStep u) d Melody.na
+
+song :: Melody.T -> MIDIMusic.T
+song = MIDIMusic.fromStdMelody MIDIMusic.AcousticGrandPiano
+
+write :: FilePath -> MIDIMusic.T -> IO ()
+write file music = SaveMIDI.toFile file $ MIDIRender.generalMidiDeflt music
+
+gentest = either (const undefined) (write "test.mid") $
+          fmap (song . Music.line . fmap measureToHaskore) test
 
 class HasDuration a where
   dur :: a -> Music.Dur
