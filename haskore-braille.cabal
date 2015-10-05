@@ -15,6 +15,7 @@ cabal-version:       >=1.10
 library
   build-depends:       base >=4.7
                      , haskore >= 0.2.0.7
+                     , midi >= 0.2.1.5
                      , mtl
                      , parsec >=3.1.9
                      , transformers
@@ -28,6 +29,7 @@ executable profiling
   ghc-options: -O2 -threaded -prof -fprof-auto "-with-rtsopts=-N -p -s -h -i0.1"
   build-depends: base >= 4.7 && < 5
                , haskore-braille
+               , midi >= 0.2.1.5
                , parsec >=3.1.9
                , transformers
                , transformers-compat >= 0.4.0.3

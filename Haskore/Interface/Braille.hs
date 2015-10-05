@@ -3,30 +3,30 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
-import Control.Monad (guard)
-import Control.Monad.Error (throwError)
-import Control.Monad.Identity (Identity(..))
-import Control.Monad.Trans.Except (ExceptT(..))
-import Control.Monad.Trans.List (ListT(..))
-import Control.Monad.Trans.State (StateT(..), get, gets, put)
-import Data.Bits ((.&.))
-import Data.Functor (($>))
-import Data.Monoid (mappend)
-import Data.Traversable (traverse)
+import           Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Monad (guard)
+import           Control.Monad.Error (throwError)
+import           Control.Monad.Identity (Identity(..))
+import           Control.Monad.Trans.Except (ExceptT(..))
+import           Control.Monad.Trans.List (ListT(..))
+import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
+import           Data.Bits ((.&.))
+import           Data.Functor (($>))
+import           Data.Monoid (mappend)
+import           Data.Traversable (traverse)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
-import qualified Haskore.Melody.Standard as Melody (T, na)
 import qualified Haskore.Melody as Melody (note)
+import qualified Haskore.Melody.Standard as Melody (T, na)
+import           Haskore.Music as Music ((+:+), (=:=))
 import qualified Haskore.Music as Music (Dur, chord, line, rest)
-import Haskore.Music as Music ((+:+), (=:=))
-import qualified Haskore.Music.GeneralMIDI     as MIDIMusic
-import qualified Haskore.Process.Optimization  as Optimize
-import qualified Sound.MIDI.File.Save          as SaveMIDI
-import Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
-import Text.Parsec.Combinator (choice)
-import Text.Parsec.Error (ParseError)
-import Text.Parsec.String (Parser)
+import qualified Haskore.Music.GeneralMIDI as MIDIMusic
+import qualified Haskore.Process.Optimization as Optimize
+import qualified Sound.MIDI.File.Save as SaveMIDI
+import           Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
+import           Text.Parsec.Combinator (choice)
+import           Text.Parsec.Error (ParseError)
+import           Text.Parsec.String (Parser)
 
 -- Braille music code only uses the old 6-dot system.  We enumerate all
 -- possible dot patterns to use the type system to avoid accidentally
@@ -244,12 +244,11 @@ ms l = filter allEqDur . traverse (vs l) where
   vs _ []     = return []
   vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs where
     pms l = filter allEqDur . traverse (pvs l) where
-      pvs = curry $ map (mkPV . fst) . runStateT interpretations where
+      pvs = curry $ map mkPV . evalStateT interpretations where
         interpretations = allWhich $ notegroup <|> one large <|> one small
         allWhich p = do a <- p
                         eoi <- gets $ null . snd
                         if not eoi then mappend a <$> allWhich p else return a
-        -- ... Move rules to come which will eventually return lists with length > 1.
         one mk = do (l, x:xs) <- get
                     let sign = mkSign mk x
                     guard (l >= dur sign)
@@ -291,18 +290,21 @@ test = let l = 3/2 in
           return $ filter ((== l) . dur) candidates
 
 measureToHaskore :: Measure -> Melody.T
-measureToHaskore = Optimize.all . Music.chord . map v where
+measureToHaskore = Music.chord . map v where
   v = Music.line . map pm where
     pm = Music.chord . map pv where
       pv (PartialVoice _ xs) = Music.line $ map conv xs where
-        conv (Rest d _) = Music.rest d
-        conv (Note d u) = Melody.note (1, ambiguousStep u) d Melody.na
+        conv (Rest duration _) = Music.rest duration
+        conv (Note duration u) = Melody.note pitch duration Melody.na where
+          pitch = Pitch.transpose 0 (octave, pitchClass)
+          octave = 3
+          pitchClass = ambiguousStep u
 
 song :: Melody.T -> MIDIMusic.T
 song = MIDIMusic.fromStdMelody MIDIMusic.AcousticGrandPiano
 
 write :: FilePath -> MIDIMusic.T -> IO ()
-write file music = SaveMIDI.toFile file $ MIDIRender.generalMidiDeflt music
+write file = SaveMIDI.toFile file . MIDIRender.generalMidiDeflt
 
 gentest = either (const undefined) (write "test.mid") $
           fmap (song . Music.line . fmap measureToHaskore) test
