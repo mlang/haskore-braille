@@ -238,33 +238,44 @@ type Measure = [Voice]
 
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Music.Dur -> AmbiguousMeasure -> [Measure]
-ms l = filter allEqDur . traverse (vs l) where
-  allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
-  vs _ []     = return []
-  vs l (x:xs) = pms l x >>= \pm -> (pm :) <$> vs (l - dur pm) xs where
-    pms l = filter allEqDur . traverse (pvs l) where
-      pvs = curry $ map mkPV . evalStateT interpretations where
-        interpretations = allWhich $ notegroup <|> one large <|> one small
-        allWhich p = do a <- p
-                        eoi <- gets $ null . snd
-                        if not eoi then mappend a <$> allWhich p else return a
-        one mk = do (l, x:xs) <- get
-                    let sign = mkSign mk x
-                    guard (l >= dur sign)
-                    put (l - dur sign, xs)
-                    return [sign]
-        notegroup = do (l, x:xs) <- get
-                       let a = mkSign small x
-                       let (as,xs') = span isTail xs
-                       guard $ length as >= 3
-                       let candids = a : map (mkSign (const (realValue a))) as
-                       let d = sum $ map dur candids
-                       guard $ l >= d
-                       put (l - d, xs')
-                       return candids where
-          isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
-          isTail _ = False                                  
+ms :: Music.Dur -> AmbiguousMeasure -> Either e [Measure]
+ms l = fmap (filter allEqDur . sequence) . traverse (vs l)
+
+allEqDur :: HasDuration a => [a] -> Bool
+allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
+
+vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
+vs _ []     = return [[]]
+vs l (x:xs) = either Left f $ pms l x where
+  f pms = fmap concat $ sequence $
+          pms >>= \pm ->
+          return $ either Left (\pmss -> Right $ (pm :) <$> pmss) (vs (l - dur pm) xs)
+
+pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
+pms l = fmap (filter allEqDur . sequence) . traverse (pvs l)
+
+pvs :: Music.Dur -> AmbiguousPartialVoice -> Either e [PartialVoice]
+pvs = curry $ fmap (map mkPV) . runListT . evalStateT interpretations where
+  interpretations = allWhich $ notegroup <|> one large <|> one small
+  allWhich p = do a <- p
+                  eoi <- gets $ null . snd
+                  if not eoi then mappend a <$> allWhich p else return a
+  one mk = do (l, x:xs) <- get
+              let sign = mkSign mk x
+              guard (l >= dur sign)
+              put (l - dur sign, xs)
+              return [sign]
+  notegroup = do (l, x:xs) <- get
+                 let a = mkSign small x
+                 let (as,xs') = span isTail xs
+                 guard $ length as >= 3
+                 let candids = a : map (mkSign (const (realValue a))) as
+                 let d = sum $ map dur candids
+                 guard $ l >= d
+                 put (l - d, xs')
+                 return candids where
+    isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
+    isTail _ = False                                  
 
 type Disambiguator s e a = StateT s (ListT (Either e)) a
 runDisambiguator :: Disambiguator s e a -> s -> Either e [(a, s)]
@@ -276,9 +287,19 @@ spans = go [] where
   go _ _ []     = []
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
 
+data SemanticError = NoPreviousMeasure SourcePos deriving (Show)
+
+data Error = Syntax ParseError
+           | Semantic SemanticError
+           deriving (Show)
+
 -- | Test measure disambiguation.
-testms :: Music.Dur -> String -> Either ParseError [Measure]
-testms l s = ms l <$> parse measureP "" s
+testms :: Music.Dur -> String -> Either Error [Measure]
+testms l = either e1 (either e2 Right . ms l) . parse parser "" where
+  parser = measureP
+  e1 = Left . Syntax
+  e2 = Left . Semantic
+
 
 -- | A well-known time-consuming test case from Bach's Goldberg Variation #3.
 -- In general, music with meter > 1 is more time-consuming because
