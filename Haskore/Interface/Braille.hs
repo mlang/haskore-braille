@@ -3,7 +3,7 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Applicative (Alternative, Applicative, many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
 import           Control.Monad (guard)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Trans.List (ListT(..))
@@ -11,7 +11,7 @@ import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, p
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum)
 import           Data.Functor (($>))
-import           Data.Monoid (mempty, mappend, mconcat)
+import           Data.Monoid (Monoid, mempty, mappend, mconcat)
 import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -242,7 +242,8 @@ ms l = fmap (filter allEqDur . sequenceA) . traverse (vs l)
 allEqDur :: HasDuration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
-vs :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
+vs :: (Monoid (alternative Voice), Applicative alternative)
+   => Music.Dur -> AmbiguousVoice -> Either SemanticError (alternative Voice)
 vs _ [] = throwError EmptyVoice
 vs l xs = go l xs where
   go _ []     = pure $ pure mempty
@@ -251,7 +252,7 @@ vs l xs = go l xs where
                      y <- ys
                      pure $ do
                        yss <- go (l - dur y) xs
-                       pure $ (y :) <$> yss
+                       pure $ (mappend $ pure y) <$> yss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
