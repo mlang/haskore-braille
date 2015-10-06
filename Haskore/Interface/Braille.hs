@@ -3,7 +3,7 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import           Control.Applicative (empty, many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
 import           Control.Monad (foldM, guard)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Identity (Identity(..))
@@ -11,6 +11,7 @@ import           Control.Monad.Trans.Except (ExceptT(..))
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
+import           Data.Foldable (asum)
 import           Data.Functor (($>))
 import           Data.Monoid (mappend)
 import           Data.Traversable (traverse)
@@ -279,7 +280,7 @@ one mk = do (l, x:xs) <- get
 notegroup :: PVDisambiguator e
 notegroup = do x:xs <- gets snd
                let a = mkSign small x
-               foldl (<|>) empty $ map (uncurry $ go a) $ spans isTail xs where
+               asum $ map (uncurry $ go a) $ spans isTail xs where
   isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
   isTail _ = False                                  
   go a as xs = do guard $ length as >= 3 -- Check minimal length of a notegroup
