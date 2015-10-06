@@ -12,7 +12,7 @@ import           Data.Bits ((.&.))
 import           Data.Foldable (asum)
 import           Data.Functor (($>))
 import           Data.Monoid (mappend)
-import           Data.Traversable (traverse)
+import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
 import qualified Haskore.Melody as Melody (note)
@@ -237,7 +237,7 @@ type Measure = [Voice]
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
 ms :: Music.Dur -> AmbiguousMeasure -> Either e [Measure]
-ms l = fmap (filter allEqDur . sequence) . traverse (vs l)
+ms l = fmap (filter allEqDur . sequenceA) . traverse (vs l)
 
 allEqDur :: HasDuration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
@@ -245,14 +245,14 @@ allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
 vs _ []     = pure [[]]
 vs l (x:xs) = do pms' <- pms l x
-                 fmap concat $ sequence $ do
+                 fmap concat $ sequenceA $ do
                    pm <- pms'
                    pure $ do
                      pmss <- vs (l - dur pm) xs
                      pure $ (pm :) <$> pmss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
-pms l = fmap (filter allEqDur . sequence) . traverse (pvs l)
+pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
 
 pvs :: Music.Dur -> AmbiguousPartialVoice -> Either e [PartialVoice]
 pvs = curry $ fmap (map mkPV) . runListT . evalStateT
