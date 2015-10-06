@@ -246,10 +246,12 @@ allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
 vs _ []     = return [[]]
-vs l (x:xs) = either Left f $ pms l x where
-  f pms = fmap concat $ sequence $
-          pms >>= \pm ->
-          return $ either Left (\pmss -> Right $ (pm :) <$> pmss) (vs (l - dur pm) xs)
+vs l (x:xs) = do pms' <- pms l x
+                 fmap concat $ sequence $ do
+                   pm <- pms'
+                   return $ do
+                     pmss <- vs (l - dur pm) xs
+                     return $ (pm :) <$> pmss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequence) . traverse (pvs l)
