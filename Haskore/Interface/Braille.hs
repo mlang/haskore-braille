@@ -11,7 +11,7 @@ import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, p
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum)
 import           Data.Functor (($>))
-import           Data.Monoid (mappend)
+import           Data.Monoid (mappend, mconcat)
 import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -236,20 +236,22 @@ type Measure = [Voice]
 
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Music.Dur -> AmbiguousMeasure -> Either e [Measure]
+ms :: Music.Dur -> AmbiguousMeasure -> Either SemanticError [Measure]
 ms l = fmap (filter allEqDur . sequenceA) . traverse (vs l)
 
 allEqDur :: HasDuration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
-vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
-vs _ []     = pure [[]]
-vs l (x:xs) = do pms' <- pms l x
-                 fmap concat $ sequenceA $ do
-                   pm <- pms'
-                   pure $ do
-                     pmss <- vs (l - dur pm) xs
-                     pure $ (pm :) <$> pmss
+vs :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
+vs _ [] = throwError EmptyVoice
+vs l xs = vs' l xs where
+  vs' _ []     = pure [[]]
+  vs' l (x:xs) = do ys <- pms l x
+                    fmap mconcat $ sequenceA $ do
+                      y <- ys
+                      pure $ do
+                        yss <- vs' (l - dur y) xs
+                        pure $ (y :) <$> yss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
@@ -294,7 +296,9 @@ spans = go [] where
   go _ _ []     = []
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
 
-data SemanticError = NoPreviousMeasure SourcePos deriving (Show)
+data SemanticError = EmptyVoice | NoPreviousMeasure deriving (Show)
+
+    
 
 data Error = Syntax ParseError
            | Semantic SemanticError
