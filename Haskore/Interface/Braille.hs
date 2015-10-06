@@ -11,7 +11,7 @@ import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, p
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum)
 import           Data.Functor (($>))
-import           Data.Monoid (mappend, mconcat)
+import           Data.Monoid (mempty, mappend, mconcat)
 import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -244,14 +244,14 @@ allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 vs :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
 vs _ [] = throwError EmptyVoice
-vs l xs = vs' l xs where
-  vs' _ []     = pure [[]]
-  vs' l (x:xs) = do ys <- pms l x
-                    fmap mconcat $ sequenceA $ do
-                      y <- ys
-                      pure $ do
-                        yss <- vs' (l - dur y) xs
-                        pure $ (y :) <$> yss
+vs l xs = go l xs where
+  go _ []     = pure $ pure mempty
+  go l (x:xs) = do ys <- pms l x
+                   fmap mconcat $ sequenceA $ do
+                     y <- ys
+                     pure $ do
+                       yss <- go (l - dur y) xs
+                       pure $ (y :) <$> yss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
