@@ -4,10 +4,8 @@ module Haskore.Interface.Braille (
 ) where
 
 import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (foldM, guard)
+import           Control.Monad (guard)
 import           Control.Monad.Error (throwError)
-import           Control.Monad.Identity (Identity(..))
-import           Control.Monad.Trans.Except (ExceptT(..))
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
@@ -19,9 +17,8 @@ import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, tran
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
 import qualified Haskore.Melody as Melody (note)
 import qualified Haskore.Melody.Standard as Melody (T, na)
-import           Haskore.Music as Music ((+:+), (=:=))
 import qualified Haskore.Music as Music (Dur, chord, line, rest)
-import qualified Haskore.Music.GeneralMIDI as MIDIMusic
+import qualified Haskore.Music.GeneralMIDI as MIDIMusic (Instrument(..), T, fromStdMelody)
 import qualified Haskore.Process.Optimization as Optimize
 import qualified Sound.MIDI.File.Save as SaveMIDI
 import           Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
@@ -270,7 +267,7 @@ allWhich p = do a <- p
                 eoi <- gets $ null . snd
                 if not eoi then mappend a <$> allWhich p else pure a
 
-one :: (AmbiguousValue -> MIDIMusic.Dur) -> PVDisambiguator e
+one :: (AmbiguousValue -> Music.Dur) -> PVDisambiguator e
 one mk = do (l, x:xs) <- get
             let sign = mkSign mk x
             guard (l >= dur sign)
