@@ -3,8 +3,8 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (guard)
+import           Control.Applicative (empty, many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Monad (foldM, guard)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Identity (Identity(..))
 import           Control.Monad.Trans.Except (ExceptT(..))
@@ -261,7 +261,8 @@ pvs = curry $ fmap (map mkPV) . runListT . evalStateT
               (allWhich $ notegroup <|> one large <|> one small)
 
 type Disambiguator s e a = StateT s (ListT (Either e)) a
-type PVDisambiguator e = Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
+type PVDisambiguator e =
+    Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
 
 allWhich :: PVDisambiguator e -> PVDisambiguator e
 allWhich p = do a <- p
@@ -276,17 +277,18 @@ one mk = do (l, x:xs) <- get
             pure [sign]
 
 notegroup :: PVDisambiguator e
-notegroup = do (l, x:xs) <- get
+notegroup = do x:xs <- gets snd
                let a = mkSign small x
-               let (as,xs') = span isTail xs
-               guard $ length as >= 3
-               let candids = a : map (mkSign (const (realValue a))) as
-               let d = sum $ map dur candids
-               guard $ l >= d
-               put (l - d, xs')
-               pure candids where
+               foldl (<|>) empty $ map (uncurry $ go a) $ spans isTail xs where
   isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
   isTail _ = False                                  
+  go a as xs = do guard $ length as >= 3 -- Check minimal length of a notegroup
+                  let line = a : map (mkSign (const (realValue a))) as
+                  let d = sum $ map dur line
+                  l <- gets fst
+                  guard $ l >= d         -- Does the choosen line fit?
+                  put (l - d, xs)
+                  pure line
 
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
