@@ -3,7 +3,7 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import           Control.Applicative (many, optional, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
 import           Control.Monad (guard)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Identity (Identity(..))
@@ -143,7 +143,7 @@ noteP = try parseNote where
                             <*> getPosition
                             <?> "note"
   ambiguousValueP = lookAhead $ anyBrl >>= getValue where
-    getValue d = return $ case mask Dot36 d of
+    getValue d = pure $ case mask Dot36 d of
                           Dot36  -> WholeOr16th
                           Dot3   -> HalfOr32th
                           Dot6   -> QuarterOr64th
@@ -151,13 +151,13 @@ noteP = try parseNote where
                           _      -> error "Unreachable"
   stepP = anyBrl >>= check where
     check d = case mask Dot1245 d of
-              Dot145  -> return Pitch.C
-              Dot15   -> return Pitch.D
-              Dot124  -> return Pitch.E
-              Dot1245 -> return Pitch.F
-              Dot125  -> return Pitch.G
-              Dot24   -> return Pitch.A
-              Dot245  -> return Pitch.B
+              Dot145  -> pure Pitch.C
+              Dot15   -> pure Pitch.D
+              Dot124  -> pure Pitch.E
+              Dot1245 -> pure Pitch.F
+              Dot125  -> pure Pitch.G
+              Dot24   -> pure Pitch.A
+              Dot245  -> pure Pitch.B
               _       -> fail "Not a note"
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
@@ -245,13 +245,13 @@ allEqDur :: HasDuration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
 vs :: Music.Dur -> AmbiguousVoice -> Either e [Voice]
-vs _ []     = return [[]]
+vs _ []     = pure [[]]
 vs l (x:xs) = do pms' <- pms l x
                  fmap concat $ sequence $ do
                    pm <- pms'
-                   return $ do
+                   pure $ do
                      pmss <- vs (l - dur pm) xs
-                     return $ (pm :) <$> pmss
+                     pure $ (pm :) <$> pmss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequence) . traverse (pvs l)
@@ -266,14 +266,14 @@ type PVDisambiguator e = Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sig
 allWhich :: PVDisambiguator e -> PVDisambiguator e
 allWhich p = do a <- p
                 eoi <- gets $ null . snd
-                if not eoi then mappend a <$> allWhich p else return a
+                if not eoi then mappend a <$> allWhich p else pure a
 
 one :: (AmbiguousValue -> MIDIMusic.Dur) -> PVDisambiguator e
 one mk = do (l, x:xs) <- get
             let sign = mkSign mk x
             guard (l >= dur sign)
             put (l - dur sign, xs)
-            return [sign]
+            pure [sign]
 
 notegroup :: PVDisambiguator e
 notegroup = do (l, x:xs) <- get
@@ -284,7 +284,7 @@ notegroup = do (l, x:xs) <- get
                let d = sum $ map dur candids
                guard $ l >= d
                put (l - d, xs')
-               return candids where
+               pure candids where
   isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
   isTail _ = False                                  
 
@@ -315,7 +315,7 @@ testms l = either e1 (either e2 Right . ms l) . parse parser "" where
 
 test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠨⠅⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
-          return $ filter ((== l) . dur) candidates
+          pure $ filter ((== l) . dur) candidates
 
 measureToHaskore :: Measure -> Melody.T
 measureToHaskore = Music.chord . map v where
