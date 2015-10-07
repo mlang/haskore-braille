@@ -299,6 +299,8 @@ spans = go [] where
 -- Possible fully monadic implementation:
 ----------------------------------------------
 -- Goals
+-- * Functions with a m suffix should much the behaviour of the corresponding functions
+--   above: ms -> msm, vs -> vsm, pms -> pmsm, pvs -> pvsm
 -- * Be able to throw in every level of the computation, without having to manually
 --   care about collapsing Eithers at each individual level.
 -- * Keep the structure flexible since the algorithm isn't fully baked yet.
@@ -307,6 +309,9 @@ spans = go [] where
 --   it would be nice if we could hide the details about keeping state in each
 --   individaul level.
 -- * It is unclear if PMMonad really needs a state, depends on how pmsm is implemented.
+
+-- Notes
+-- * pvsm seems correct already, untestable though.
 
 type MState = (Music.Dur, Maybe Measure, Bool)
 type VState = Music.Dur
@@ -343,11 +348,13 @@ pmsm = do l <- lift $ lift $ get   -- current remaining time
           return undefined
 
 pvsm :: PVMonad SemanticError PartialVoice
-pvsm = fmap mkPV $ allWhich $ one large <|> one small
+pvsm = fmap mkPV $ allWhich $ one large <|> one small -- <|> notegroup !!!
+
+testmsm = undefined
 
 
-
-data SemanticError = EmptyVoice | NoPreviousMeasure deriving (Show)
+data SemanticError = EmptyVoice
+                   | NoPreviousMeasure SourcePos deriving (Show)
 
     
 
@@ -368,9 +375,13 @@ testms l = either e1 (either e2 Right . ms l) . parse parser "" where
 -- 16th notes can also be interpreted as whole notes, and whole notes fit
 -- into meter > 1.
 
+-- λ> fmap length test
+-- Right 57
+
 test = let l = 3/2 in
        do candidates <- testms l "⠺⠓⠳⠛⠭⠭⠚⠪⠑⠣⠜⠭⠵⠽⠨⠅⠾⠮⠚⠽⠾⠮⠾⠓⠋⠑⠙⠛⠊"
           pure $ filter ((== l) . dur) candidates
+
 
 measureToHaskore :: Measure -> Melody.T
 measureToHaskore = Music.chord . map v where
