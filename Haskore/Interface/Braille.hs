@@ -334,7 +334,7 @@ msm :: AmbiguousMeasure -> MMonad SemanticError Measure
 msm = fmap (filter allEqDur . sequenceA) . mapM f where -- ?????
   f x = do (l, _, _) <- get
            vs <- runListT $ evalStateT (vsm x) l
-           return undefined
+           undefined
 
 vsm :: AmbiguousVoice -> VMonad SemanticError Voice
 vsm xs = undefined
