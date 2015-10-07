@@ -4,12 +4,15 @@ module Haskore.Interface.Braille (
 ) where
 
 import           Control.Applicative (Alternative, Applicative, many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (guard)
+import           Control.Monad (guard, liftM)
 import           Control.Monad.Error (throwError)
+import           Control.Monad.Loops (untilM)
+import           Control.Monad.Trans.Class (lift)
+import           Control.Monad.Trans.Except (ExceptT(..))
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
-import           Data.Foldable (asum)
+import           Data.Foldable (asum, fold, foldMap)
 import           Data.Functor (($>))
 import           Data.Monoid (Monoid, mempty, mappend, mconcat)
 import           Data.Traversable (traverse, sequenceA)
@@ -261,14 +264,13 @@ pvs :: Music.Dur -> AmbiguousPartialVoice -> Either e [PartialVoice]
 pvs = curry $ fmap (map mkPV) . runListT . evalStateT
               (allWhich $ notegroup <|> one large <|> one small)
 
-type Disambiguator s e a = StateT s (ListT (Either e)) a
+type Disambiguator s e = StateT s (ListT (Either e))
 type PVDisambiguator e =
     Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
 
-allWhich :: PVDisambiguator e -> PVDisambiguator e
-allWhich p = do a <- p
-                eoi <- gets $ null . snd
-                if not eoi then mappend a <$> allWhich p else pure a
+--allWhich :: PVDisambiguator e -> PVDisambiguator e
+allWhich p = liftM fold $ (p `untilM` gets (null . snd))
+--allWhich p = do { a <- p; eoi <- gets $ null . snd; if not eoi then mappend a <$> allWhich p else pure a}
 
 one :: (AmbiguousValue -> Music.Dur) -> PVDisambiguator e
 one mk = do (l, x:xs) <- get
