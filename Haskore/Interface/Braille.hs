@@ -268,11 +268,8 @@ type Disambiguator s e = StateT s (ListT (Either e))
 type PVDisambiguator e =
     Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
 
---allWhich :: PVDisambiguator e -> PVDisambiguator e
-allWhich p = liftM fold $ (p `untilM` gets (null . snd))
---allWhich p = do { a <- p; eoi <- gets $ null . snd; if not eoi then mappend a <$> allWhich p else pure a}
+allWhich p = fmap fold $ p `untilM` end where end = gets $ null . snd
 
-one :: (AmbiguousValue -> Music.Dur) -> PVDisambiguator e
 one mk = do (l, x:xs) <- get
             let sign = mkSign mk x
             guard (l >= dur sign)
@@ -298,6 +295,43 @@ spans :: (a -> Bool) -> [a] -> [([a], [a])]
 spans = go [] where
   go _ _ []     = []
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
+
+-- Possible fully monadic implementation:
+----------------------------------------------
+
+type MState = (Music.Dur, AmbiguousMeasure, Maybe Measure, Bool)
+type VState = (Music.Dur, AmbiguousVoice)
+type PMState = AmbiguousPartialMeasure
+type PVState = (Music.Dur, AmbiguousPartialVoice)
+type MMonad e = StateT MState (ListT (Either e))  -- maybe use ReaderR?
+type VMonad e = StateT VState (ListT (MMonad e))
+type PMMonad e = StateT PMState (ListT (VMonad e))
+type PVMonad e = StateT PVState (ListT (PMMonad e))
+
+runMMonad :: Maybe Measure  -- Previous measure
+          -> Music.Dur      -- Time signature (maximum duration)
+          -> AmbiguousMeasure
+          -> Either SemanticError [Measure]
+runMMonad p l xs = runListT $ evalStateT msm (l, xs, p, False)
+
+msm :: MMonad SemanticError Measure
+msm = undefined
+
+vsm :: VMonad SemanticError Voice
+vsm = undefined
+
+pmsm :: PMMonad SemanticError PartialMeasure
+pmsm = do l <- lift $ lift $ gets fst
+          apv:apvs <- get
+          pvs <- runListT $ evalStateT pvsm (l, apv)
+          put apvs
+          pvss <- pmsm
+          return undefined
+
+pvsm :: PVMonad SemanticError PartialVoice
+pvsm = fmap mkPV $ allWhich $ one large <|> one small
+
+
 
 data SemanticError = EmptyVoice | NoPreviousMeasure deriving (Show)
 
