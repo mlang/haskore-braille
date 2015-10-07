@@ -298,12 +298,21 @@ spans = go [] where
 
 -- Possible fully monadic implementation:
 ----------------------------------------------
+-- Goals
+-- * Be able to throw in every level of the computation, without having to manually
+--   care about collapsing Eithers at each individual level.
+-- * Keep the structure flexible since the algorithm isn't fully baked yet.
+-- * Minimize differences between related operations.
+--   What we really do is (traverse . traverse . traverse . traverse),
+--   it would be nice if we could hide the details about keeping state in each
+--   individaul level.
+-- * It is unclear if PMMonad really needs a state, depends on how pmsm is implemented.
 
-type MState = (Music.Dur, AmbiguousMeasure, Maybe Measure, Bool)
-type VState = (Music.Dur, AmbiguousVoice)
-type PMState = AmbiguousPartialMeasure
+type MState = (Music.Dur, Maybe Measure, Bool)
+type VState = Music.Dur
+type PMState = AmbiguousPartialMeasure         -- might be unnecessary
 type PVState = (Music.Dur, AmbiguousPartialVoice)
-type MMonad e = StateT MState (ListT (Either e))  -- maybe use ReaderR?
+type MMonad e = StateT MState (ListT (Either e))
 type VMonad e = StateT VState (ListT (MMonad e))
 type PMMonad e = StateT PMState (ListT (VMonad e))
 type PVMonad e = StateT PVState (ListT (PMMonad e))
@@ -312,16 +321,21 @@ runMMonad :: Maybe Measure  -- Previous measure
           -> Music.Dur      -- Time signature (maximum duration)
           -> AmbiguousMeasure
           -> Either SemanticError [Measure]
-runMMonad p l xs = runListT $ evalStateT msm (l, xs, p, False)
+runMMonad p l m = runListT $ evalStateT (msm m) (l, p, False)
 
-msm :: MMonad SemanticError Measure
-msm = undefined
+msm :: AmbiguousMeasure -> MMonad SemanticError Measure
+-- we'd like to set the Bool flag in MState if we've seen a Measure
+-- with dur == time signature, allows cutting off the search in pvsm.
+msm = fmap (filter allEqDur . sequenceA) . mapM f where -- ?????
+  f x = do (l, _, _) <- get
+           vs <- runListT $ evalStateT (vsm x) l
+           return undefined
 
-vsm :: VMonad SemanticError Voice
-vsm = undefined
+vsm :: AmbiguousVoice -> VMonad SemanticError Voice
+vsm xs = undefined
 
 pmsm :: PMMonad SemanticError PartialMeasure
-pmsm = do l <- lift $ lift $ gets fst
+pmsm = do l <- lift $ lift $ get   -- current remaining time
           apv:apvs <- get
           pvs <- runListT $ evalStateT pvsm (l, apv)
           put apvs
