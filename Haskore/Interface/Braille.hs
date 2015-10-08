@@ -3,18 +3,16 @@ module Haskore.Interface.Braille (
   testms, test
 ) where
 
-import           Control.Applicative (Alternative, Applicative, many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (guard, liftM)
+import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Monad (guard)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
-import           Control.Monad.Trans.Class (lift)
-import           Control.Monad.Trans.Except (ExceptT(..))
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
-import           Data.Foldable (asum, fold, foldMap)
+import           Data.Foldable (asum, fold)
 import           Data.Functor (($>))
-import           Data.Monoid (Monoid, mempty, mappend, mconcat)
+import           Data.Monoid (mempty, mconcat)
 import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -294,63 +292,6 @@ spans :: (a -> Bool) -> [a] -> [([a], [a])]
 spans = go [] where
   go _ _ []     = []
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
-
--- Possible fully monadic implementation:
-----------------------------------------------
--- Goals
--- * Functions with a m suffix should much the behaviour of the corresponding functions
---   above: ms -> msm, vs -> vsm, pms -> pmsm, pvs -> pvsm
--- * Be able to throw in every level of the computation, without having to manually
---   care about collapsing Eithers at each individual level.
--- * Keep the structure flexible since the algorithm isn't fully baked yet.
--- * Minimize differences between related operations.
---   What we really do is (traverse . traverse . traverse . traverse),
---   it would be nice if we could hide the details about keeping state in each
---   individaul level.
--- * It is unclear if PMMonad really needs a state, depends on how pmsm is implemented.
-
--- Notes
--- * pvsm seems correct already, untestable though.
-
-type MState = (Music.Dur, Maybe Measure, Bool)
-type VState = Music.Dur
-type PMState = AmbiguousPartialMeasure         -- might be unnecessary
-type PVState = (Music.Dur, AmbiguousPartialVoice)
-type MMonad e = StateT MState (ListT (Either e))
-type VMonad e = StateT VState (ListT (MMonad e))
-type PMMonad e = StateT PMState (ListT (VMonad e))
-type PVMonad e = StateT PVState (ListT (PMMonad e))
-
-runMMonad :: Maybe Measure  -- Previous measure
-          -> Music.Dur      -- Time signature (maximum duration)
-          -> AmbiguousMeasure
-          -> Either SemanticError [Measure]
-runMMonad p l m = runListT $ evalStateT (msm m) (l, p, False)
-
-msm :: AmbiguousMeasure -> MMonad SemanticError Measure
--- we'd like to set the Bool flag in MState if we've seen a Measure
--- with dur == time signature, allows cutting off the search in pvsm.
-msm = fmap (filter allEqDur . sequenceA) . mapM f where -- ?????
-  f x = do (l, _, _) <- get
-           vs <- runListT $ evalStateT (vsm x) l
-           undefined
-
-vsm :: AmbiguousVoice -> VMonad SemanticError Voice
-vsm xs = undefined
-
-pmsm :: PMMonad SemanticError PartialMeasure
-pmsm = do l <- lift $ lift $ get   -- current remaining time
-          apv:apvs <- get
-          pvs <- runListT $ evalStateT pvsm (l, apv)
-          put apvs
-          pvss <- pmsm
-          return undefined
-
-pvsm :: PVMonad SemanticError PartialVoice
-pvsm = fmap mkPV $ allWhich $ one large <|> one small -- <|> notegroup !!!
-
-testmsm = undefined
-
 
 data SemanticError = EmptyVoice
                    | NoPreviousMeasure SourcePos deriving (Show)
