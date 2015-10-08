@@ -12,7 +12,9 @@ import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, p
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum, fold)
 import           Data.Functor (($>))
+import           Data.List (sortBy)
 import           Data.Monoid (mempty, mconcat)
+import           Data.Ord (comparing)
 import           Data.Traversable (traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -21,6 +23,7 @@ import qualified Haskore.Melody.Standard as Melody (T, na)
 import qualified Haskore.Music as Music (Dur, chord, line, rest)
 import qualified Haskore.Music.GeneralMIDI as MIDIMusic (Instrument(..), T, fromStdMelody)
 import qualified Haskore.Process.Optimization as Optimize
+import           Numeric.NonNegative.Wrapper (toNumber)
 import qualified Sound.MIDI.File.Save as SaveMIDI
 import           Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
 import           Text.Parsec.Combinator (choice)
@@ -293,6 +296,15 @@ spans = go [] where
   go _ _ []     = []
   go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
 
+flatten :: Measure -> [Sign]
+flatten = concatMap $ concatMap $ concatMap $ \ (PartialVoice _ xs) -> xs
+
+harmonicMean :: Fractional a => [a] -> a
+harmonicMean = uncurry (flip (/)) . foldl (\(x, y) n -> (x + (1/n), y+1)) mzero
+
+score :: Measure -> Rational
+score = harmonicMean . map (toNumber . dur) . flatten
+
 data SemanticError = EmptyVoice
                    | NoPreviousMeasure SourcePos deriving (Show)
 
@@ -304,7 +316,7 @@ data Error = Syntax ParseError
 
 -- | Test measure disambiguation.
 testms :: Music.Dur -> String -> Either Error [Measure]
-testms l = either e1 (either e2 Right . ms l) . parse parser "" where
+testms l = either e1 (either e2 Right . ms l) . parse parser "test input" where
   parser = measureP
   e1 = Left . Syntax
   e2 = Left . Semantic
