@@ -245,8 +245,7 @@ ms l = fmap (filter allEqDur . sequenceA) . traverse (vs l)
 allEqDur :: HasDuration a => [a] -> Bool
 allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
 
-vs :: (Monoid (alternative Voice), Applicative alternative)
-   => Music.Dur -> AmbiguousVoice -> Either SemanticError (alternative Voice)
+vs :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
 vs _ [] = throwError EmptyVoice
 vs l xs = go l xs where
   go _ []     = pure $ pure mempty
@@ -255,7 +254,7 @@ vs l xs = go l xs where
                      y <- ys
                      pure $ do
                        yss <- go (l - dur y) xs
-                       pure $ (mappend $ pure y) <$> yss
+                       pure $ (y :) <$> yss
 
 pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
 pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
