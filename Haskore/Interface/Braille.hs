@@ -372,8 +372,8 @@ measureToHaskore = Music.chord . map v where
 
 toStdMelody :: Music.Dur -> String -> Either Error Melody.T
 toStdMelody l b = do ms <- testms l b
-                     either (const $ Left $ Semantic $ EmptyVoice)
-                            (\m -> Right $ measureToHaskore m)
+                     either (const $ Left $ Semantic EmptyVoice)
+                            (Right . measureToHaskore)
                             (pick ms)
 
 song :: Melody.T -> MIDIMusic.T
