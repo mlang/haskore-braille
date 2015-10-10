@@ -4,7 +4,7 @@ import qualified Algebra.Ring as Ring (C)
 import qualified Haskore.Interface.Braille as Braille
 import qualified Haskore.Interface.Signal.InstrumentMap as InstrumentMap
 import qualified Haskore.Interface.Signal.Write as MusicSignal
-import           Haskore.Melody.Standard as StdMelody
+import qualified Haskore.Melody.Standard as StdMelody
 import qualified Haskore.Music as Music
 import qualified Haskore.Music.Rhythmic  as RhythmicMusic
 import qualified Haskore.Performance.Context as Context
@@ -13,7 +13,7 @@ import qualified Synthesizer.Plain.Filter.Recursive.Comb as Comb (run)
 import           Synthesizer.Plain.Instrument (bell)
 import qualified Synthesizer.Plain.Play as Play
 import qualified Synthesizer.Plain.Signal as Signal
-import           System.Exit (exitFailure)
+import           System.Exit (ExitCode(..), exitFailure)
 import           System.Environment (getArgs)
 
 data Instrument = Bell deriving (Eq, Ord)
@@ -52,7 +52,10 @@ melodySignal mel =
 
 
 
+main :: IO ExitCode
 main = do [braille] <- getArgs
-          either (\e -> putStrLn (show e) >> exitFailure)
-              (\mel -> Play.stereoToInt16 defltSampleRate (melodySignal $ Music.line [mel, Music.rest 16]))
+          either (\e -> print e >> exitFailure)
+              (\mel -> Play.stereoToInt16 defltSampleRate $
+                       melodySignal $ Music.transpose (-24) $
+                       Music.line [mel, Music.qnr, StdMelody.c 2 RhythmicMusic.qn StdMelody.na])
               (Braille.toStdMelody 1 braille)
