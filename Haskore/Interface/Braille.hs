@@ -1,18 +1,19 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
 module Haskore.Interface.Braille (
-  testms, test
+  toStdMelody
 ) where
 
 import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (guard)
+import           Control.Monad (guard, liftM)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum, fold)
+import           Data.Function (on)
 import           Data.Functor (($>))
-import           Data.List (sortBy)
+import           Data.List (foldl', sortBy)
 import           Data.Monoid (mempty, mconcat)
 import           Data.Ord (comparing)
 import           Data.Traversable (traverse, sequenceA)
@@ -25,7 +26,7 @@ import qualified Haskore.Music.GeneralMIDI as MIDIMusic (Instrument(..), T, from
 import qualified Haskore.Process.Optimization as Optimize
 import           Numeric.NonNegative.Wrapper (toNumber)
 import qualified Sound.MIDI.File.Save as SaveMIDI
-import           Text.Parsec (SourcePos, getPosition, lookAhead, parse, satisfy, sepBy, try, (<?>))
+import           Text.Parsec (SourcePos, getPosition, lookAhead, newline, parse, satisfy, sepBy, sepBy1, space, try, (<?>))
 import           Text.Parsec.Combinator (choice)
 import           Text.Parsec.Error (ParseError)
 import           Text.Parsec.String (Parser)
@@ -187,19 +188,27 @@ partialVoiceP = some $ noteP <|> restP
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
 
 partialMeasureP :: Parser AmbiguousPartialMeasure
-partialMeasureP = sepBy partialVoiceP $ brl Dot5 *> brl Dot2
+partialMeasureP = sepBy1 partialVoiceP $ brl Dot5 *> brl Dot2
 
 -- | A voice consists of one or more serial partial measures.
 type AmbiguousVoice = [AmbiguousPartialMeasure]
 
 voiceP :: Parser AmbiguousVoice
-voiceP = sepBy partialMeasureP $ brl Dot46 *> brl Dot13
+voiceP = sepBy1 partialMeasureP $ brl Dot46 *> brl Dot13
 
 -- | A measure contains several parallel voices.
 type AmbiguousMeasure = [AmbiguousVoice]
 
 measureP :: Parser AmbiguousMeasure
-measureP = sepBy voiceP $ brl Dot126 *> brl Dot345
+measureP = sepBy1 voiceP $ brl Dot126 *> brl Dot345
+
+measureSepP :: Parser ()
+measureSepP =  (space *> return ())
+           <|> (brl NoDots *> return ())
+           <|> (newline *> return ())
+
+sectionP :: Parser [AmbiguousMeasure]
+sectionP = sepBy measureP measureSepP
 
 -- With the basic data structure defined and parsed into, we can finally
 -- move towards the actually interesting task of disambiguating values.
@@ -238,37 +247,39 @@ type PartialMeasure = [PartialVoice]
 type Voice = [PartialMeasure]
 type Measure = [Voice]
 
+parallel :: HasDuration b => (a -> Either e [b]) -> [a] -> Either e [[b]]
+parallel f = fmap (filter allEqDur . sequenceA) . traverse f where
+  allEqDur []     = False
+  allEqDur (x:xs) = all (eq x) xs where eq = (==) `on` dur
+
 -- | Given the current time signature (meter), return a list of all possible
 -- interpretations of the given measure.
-ms :: Music.Dur -> AmbiguousMeasure -> Either SemanticError [Measure]
-ms l = fmap (filter allEqDur . sequenceA) . traverse (vs l)
+measures :: Music.Dur -> AmbiguousMeasure -> Either SemanticError [Measure]
+measures = parallel . voices
 
-allEqDur :: HasDuration a => [a] -> Bool
-allEqDur xs = all ((== dur (head xs)) . dur) (tail xs)
-
-vs :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
-vs _ [] = throwError EmptyVoice
-vs l xs = go l xs where
+voices :: Music.Dur -> AmbiguousVoice -> Either SemanticError [Voice]
+voices _ [] = throwError EmptyVoice
+voices l xs = go l xs where
   go _ []     = pure $ pure mempty
-  go l (x:xs) = do ys <- pms l x
+  go l (x:xs) = do ys <- partialMeasures l x
                    fmap mconcat $ sequenceA $ do
                      y <- ys
                      pure $ do
                        yss <- go (l - dur y) xs
                        pure $ (y :) <$> yss
 
-pms :: Music.Dur -> AmbiguousPartialMeasure -> Either e [PartialMeasure]
-pms l = fmap (filter allEqDur . sequenceA) . traverse (pvs l)
+partialMeasures :: Music.Dur -> AmbiguousPartialMeasure -> Either SemanticError [PartialMeasure]
+partialMeasures = parallel . partialVoices
 
-pvs :: Music.Dur -> AmbiguousPartialVoice -> Either e [PartialVoice]
-pvs = curry $ fmap (map mkPV) . runListT . evalStateT
-              (allWhich $ notegroup <|> one large <|> one small)
+partialVoices :: Music.Dur -> AmbiguousPartialVoice -> Either SemanticError [PartialVoice]
+partialVoices = curry $ fmap (map mkPV) . runListT . evalStateT
+                        (allWhich $ notegroup <|> one large <|> one small)
 
 type Disambiguator s e = StateT s (ListT (Either e))
-type PVDisambiguator e =
-    Disambiguator (Music.Dur, AmbiguousPartialVoice) e [Sign]
+type PVDisambiguator = Disambiguator (Music.Dur, AmbiguousPartialVoice) SemanticError [Sign]
 
-allWhich p = fmap fold $ p `untilM` end where end = gets $ null . snd
+allWhich :: PVDisambiguator -> PVDisambiguator
+allWhich p = liftM fold $ p `untilM` gets (null . snd)
 
 one mk = do (l, x:xs) <- get
             let sign = mkSign mk x
@@ -276,37 +287,50 @@ one mk = do (l, x:xs) <- get
             put (l - dur sign, xs)
             pure [sign]
 
-notegroup :: PVDisambiguator e
+notegroup :: PVDisambiguator
 notegroup = do x:xs <- gets snd
-               let a = mkSign small x
-               asum $ map (uncurry $ go a) $ spans isTail xs where
-  isTail n@(AmbiguousNote {}) = ambiguousValue n == EighthOr128th
-  isTail _ = False                                  
-  go a as xs = do guard $ length as >= 3 -- Check minimal length of a notegroup
-                  let line = a : map (mkSign (const (realValue a))) as
-                  let d = sum $ map dur line
-                  l <- gets fst
-                  guard $ l >= d         -- Does the choosen line fit?
-                  put (l - d, xs)
-                  pure line
+               asum $ map (tryLine $ mkSign small x) $ spans body xs where
+  body (AmbiguousNote {ambiguousValue = av}) = av == EighthOr128th
+  body _ = False                                  
+  tryLine a (as, xs) = do guard $ length as >= 3 -- Check minimal length of a notegroup
+                          let line = a : map (mkSign $ const $ realValue a) as
+                          let d = sum $ map dur line
+                          l <- gets fst
+                          guard $ l >= d         -- Does the choosen line fit?
+                          put (l - d, xs)
+                          pure line
 
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
 spans = go [] where
-  go _ _ []     = []
-  go i p (x:xs) = if p x then let i' = i++[x] in (i',xs) : go i' p xs else []
+  go i _ []     = []
+  go i p (x:xs) | p x       = let i' = i++[x] in (i',xs) : go i' p xs
+                | otherwise = []
 
 flatten :: Measure -> [Sign]
 flatten = concatMap $ concatMap $ concatMap $ \ (PartialVoice _ xs) -> xs
 
 harmonicMean :: Fractional a => [a] -> a
-harmonicMean = uncurry (flip (/)) . foldl (\(x, y) n -> (x + (1/n), y+1)) mzero
+harmonicMean = uncurry (flip (/)) . foldl' (\(x, y) n -> (x+1/n, y+1)) (0, 0)
 
 score :: Measure -> Rational
 score = harmonicMean . map (toNumber . dur) . flatten
 
+scoreList :: [Measure] -> [(Rational, Measure)]
+scoreList = sortBy (flip (comparing fst)) . map ((,) =<< score)
+
+pick :: [Measure] -> Either [(Rational, Measure)] Measure
+pick []         = Left  mempty
+pick [x]        = Right x
+pick xs@(_:_:_) = let sorted@((bestScore, best) : xs') = scoreList xs
+                      plausible = (> 2/3) . (/ bestScore) . fst
+                  in case takeWhile plausible xs' of
+                       [] -> Right best
+                       _  -> Left sorted
+
 data SemanticError = EmptyVoice
-                   | NoPreviousMeasure SourcePos deriving (Show)
+                   | NoPreviousMeasure SourcePos
+                   deriving (Show)
 
     
 
@@ -316,7 +340,7 @@ data Error = Syntax ParseError
 
 -- | Test measure disambiguation.
 testms :: Music.Dur -> String -> Either Error [Measure]
-testms l = either e1 (either e2 Right . ms l) . parse parser "test input" where
+testms l = either e1 (either e2 Right . measures l) . parse parser "test input" where
   parser = measureP
   e1 = Left . Syntax
   e2 = Left . Semantic
@@ -345,6 +369,12 @@ measureToHaskore = Music.chord . map v where
           pitch = Pitch.transpose 0 (octave, pitchClass)
           octave = 3
           pitchClass = ambiguousStep u
+
+toStdMelody :: Music.Dur -> String -> Either Error Melody.T
+toStdMelody l b = do ms <- testms l b
+                     either (const $ Left $ Semantic $ EmptyVoice)
+                            (\m -> Right $ measureToHaskore m)
+                            (pick ms)
 
 song :: Melody.T -> MIDIMusic.T
 song = MIDIMusic.fromStdMelody MIDIMusic.AcousticGrandPiano

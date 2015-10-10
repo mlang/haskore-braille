@@ -1,6 +1,6 @@
 module Main where
 
-import Data.Braille.Music (test)
+import Haskore.Interface.Braille (pick, test)
 
-main = putStrLn $ show $ test
+main = putStrLn $ show $ fmap pick test
 
