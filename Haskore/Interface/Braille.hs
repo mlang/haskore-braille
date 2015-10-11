@@ -1,10 +1,11 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
 module Haskore.Interface.Braille (
-  toStdMelody
+  Error(..)
+, toStdMelody
 ) where
 
 import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (guard, liftM)
+import           Control.Monad (ap, guard, liftM)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
@@ -17,7 +18,7 @@ import           Data.List (foldl', sortBy)
 import           Data.Monoid (mempty, mconcat)
 import           Data.Ord (comparing)
 import           Data.Traversable (traverse, sequenceA)
-import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, Relative, transpose)
+import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, T, Relative, transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
 import qualified Haskore.Melody as Melody (note)
 import qualified Haskore.Melody.Standard as Melody (T, na)
@@ -26,10 +27,12 @@ import qualified Haskore.Music.GeneralMIDI as MIDIMusic (Instrument(..), T, from
 import qualified Haskore.Process.Optimization as Optimize
 import           Numeric.NonNegative.Wrapper (toNumber)
 import qualified Sound.MIDI.File.Save as SaveMIDI
-import           Text.Parsec (SourcePos, getPosition, lookAhead, newline, parse, satisfy, sepBy, sepBy1, space, try, (<?>))
+import           Text.Parsec ( Parsec(..), SourceName, SourcePos
+                             , getPosition, getState
+                             , lookAhead, newline, putState, runParser
+                             , satisfy, sepBy, sepBy1, space, try, (<?>))
 import           Text.Parsec.Combinator (choice)
 import           Text.Parsec.Error (ParseError)
-import           Text.Parsec.String (Parser)
 
 -- Braille music code only uses the old 6-dot system.  We enumerate all
 -- possible dot patterns to use the type system to avoid accidentally
@@ -56,6 +59,12 @@ data SixDots = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Do
 -- | Convert to Unicode Braille.
 toChar :: SixDots -> Char
 toChar = toEnum . (+ 0x2800) . fromEnum
+
+-- | A Parsec based parser type that keeps track of the last seen pitch.
+type Parser = Parsec String (Maybe Pitch.T)
+
+parse :: Parser a -> Maybe Pitch.T -> SourceName -> String -> Either ParseError a
+parse = runParser
 
 -- | Match a single Braille cell.
 brl :: SixDots -> Parser SixDots
@@ -120,9 +129,8 @@ data AmbiguousValue = WholeOr16th | HalfOr32th | QuarterOr64th | EighthOr128th
 data AmbiguousSign =
      AmbiguousNote { ambiguousBegin            :: SourcePos
                    , ambiguousAccidental       :: Maybe Accidental
-                   , ambiguousOctave           :: Maybe Pitch.Octave
+                   , ambiguousPitch            :: Pitch.T
                    , ambiguousValue            :: AmbiguousValue
-                   , ambiguousStep             :: Pitch.Class
                    , ambiguousAugmentationDots :: AugmentationDots
                    , ambiguousEnd              :: SourcePos
                    }
@@ -134,18 +142,20 @@ data AmbiguousSign =
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
 
+savePitch :: Pitch.T -> Parser Pitch.T
+savePitch = ap ((*>) . putState . Just) pure
+
 -- | Parse a Braille music note.
 noteP :: Parser AmbiguousSign
 noteP = try parseNote where
   parseNote = AmbiguousNote <$> getPosition
                             <*> optional accidentalP
-                            <*> optional octaveP
+                            <*> pitchP
                             <*> ambiguousValueP
-                            <*> stepP
                             <*> augmentationDotsP
                             <*> getPosition
                             <?> "note"
-  ambiguousValueP = lookAhead $ anyBrl >>= getValue where
+  ambiguousValueP = anyBrl >>= getValue where
     getValue d = pure $ case mask Dot36 d of
                           Dot36  -> WholeOr16th
                           Dot3   -> HalfOr32th
@@ -162,7 +172,26 @@ noteP = try parseNote where
               Dot24   -> pure Pitch.A
               Dot245  -> pure Pitch.B
               _       -> fail "Not a note"
+  pitchP = do o <- optional octaveP
+              c <- lookAhead stepP
+              case o of
+                Just o -> savePitch (o, c)
+                Nothing -> do st <- getState
+                              case st of
+                                Nothing -> fail "No octave mark"
+                                Just p' -> savePitch $ determineOctave p' c
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
+
+determineOctave :: Pitch.T -> Pitch.Class -> Pitch.T
+-- | Given a known previous pitch, enhance a pitch class to a pair of
+-- (Pitch.Octave, Pitch.Class).
+determineOctave (o, Pitch.A) c@Pitch.C = (o+1, c)
+determineOctave (o, Pitch.B) c@Pitch.C = (o+1, c)
+determineOctave (o, Pitch.B) c@Pitch.D = (o+1, c)
+determineOctave (o, _)       c         = (o,   c)
+determineOctave (o, Pitch.D) c@Pitch.B = (o-1, c)
+determineOctave (o, Pitch.C) c@Pitch.B = (o-1, c)
+determineOctave (o, Pitch.C) c@Pitch.A = (o-1, c)
 
 -- | Parse a Braille music rest.
 restP :: Parser AmbiguousSign
@@ -340,7 +369,7 @@ data Error = Syntax ParseError
 
 -- | Test measure disambiguation.
 testms :: Music.Dur -> String -> Either Error [Measure]
-testms l = either e1 (either e2 Right . measures l) . parse parser "test input" where
+testms l = either e1 (either e2 Right . measures l) . parse parser Nothing "test input" where
   parser = measureP
   e1 = Left . Syntax
   e2 = Left . Semantic
@@ -366,9 +395,7 @@ measureToHaskore = Music.chord . map v where
       pv (PartialVoice _ xs) = Music.line $ map conv xs where
         conv (Rest duration _) = Music.rest duration
         conv (Note duration u) = Melody.note pitch duration Melody.na where
-          pitch = Pitch.transpose 0 (octave, pitchClass)
-          octave = 3
-          pitchClass = ambiguousStep u
+          pitch = Pitch.transpose 0 $ ambiguousPitch u
 
 toStdMelody :: Music.Dur -> String -> Either Error Melody.T
 toStdMelody l b = do ms <- testms l b
