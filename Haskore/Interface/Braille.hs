@@ -176,9 +176,9 @@ noteP = try parseNote where
               c <- lookAhead stepP
               case o of
                 Just o -> savePitch (o, c)
-                Nothing -> do st <- getState
-                              case st of
-                                Nothing -> fail "No octave mark"
+                Nothing -> do p' <- getState
+                              case p' of
+                                Nothing -> fail "Missing octave mark"
                                 Just p' -> savePitch $ determineOctave p' c
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
@@ -188,10 +188,10 @@ determineOctave :: Pitch.T -> Pitch.Class -> Pitch.T
 determineOctave (o, Pitch.A) c@Pitch.C = (o+1, c)
 determineOctave (o, Pitch.B) c@Pitch.C = (o+1, c)
 determineOctave (o, Pitch.B) c@Pitch.D = (o+1, c)
-determineOctave (o, _)       c         = (o,   c)
 determineOctave (o, Pitch.D) c@Pitch.B = (o-1, c)
 determineOctave (o, Pitch.C) c@Pitch.B = (o-1, c)
 determineOctave (o, Pitch.C) c@Pitch.A = (o-1, c)
+determineOctave (o, _)       c         = (o,   c)
 
 -- | Parse a Braille music rest.
 restP :: Parser AmbiguousSign
@@ -217,7 +217,10 @@ partialVoiceP = some $ noteP <|> restP
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
 
 partialMeasureP :: Parser AmbiguousPartialMeasure
-partialMeasureP = sepBy1 partialVoiceP $ brl Dot5 *> brl Dot2
+partialMeasureP = do xs <- sepBy1 partialVoiceP $
+                           brl Dot5 *> brl Dot2 *> putState Nothing
+                     if length xs > 1 then putState Nothing else return ()
+                     return xs
 
 -- | A voice consists of one or more serial partial measures.
 type AmbiguousVoice = [AmbiguousPartialMeasure]
@@ -229,7 +232,10 @@ voiceP = sepBy1 partialMeasureP $ brl Dot46 *> brl Dot13
 type AmbiguousMeasure = [AmbiguousVoice]
 
 measureP :: Parser AmbiguousMeasure
-measureP = sepBy1 voiceP $ brl Dot126 *> brl Dot345
+measureP = do xs <- sepBy1 voiceP $
+                    brl Dot126 *> brl Dot345 *> putState Nothing
+              if length xs > 1 then putState Nothing else return ()
+              return xs
 
 measureSepP :: Parser ()
 measureSepP =  (space *> return ())
