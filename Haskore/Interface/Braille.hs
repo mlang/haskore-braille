@@ -1,15 +1,21 @@
 {-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
+
+-- | Braille music to Haskore conversion functions.
 module Haskore.Interface.Braille (
+  -- | Errors that can happen during parsing or post-processing.
   Error(..)
+  -- | Given a meter, convert Braille music to a Haskore Standard Melody.
 , toStdMelody
 ) where
 
-import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
+import           Control.Applicative ( many, optional, pure, some
+                                     , (<$>), (<*>), (*>), (<|>))
 import           Control.Monad (ap, guard, liftM, when)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
-import           Control.Monad.Trans.State (StateT(..), evalStateT, get, gets, put)
+import           Control.Monad.Trans.State ( StateT(..)
+                                           , evalStateT, get, gets, put)
 import           Data.Bits ((.&.))
 import           Data.Foldable (asum, fold)
 import           Data.Function (on)
@@ -18,16 +24,18 @@ import           Data.List (foldl', sortBy)
 import           Data.Monoid (mempty, mconcat)
 import           Data.Ord (comparing)
 import           Data.Traversable (traverse, sequenceA)
-import qualified Haskore.Basic.Pitch as Pitch (Class(..), Octave, T, Relative, transpose)
+import qualified Haskore.Basic.Pitch as Pitch ( Class(..), Octave, T, Relative
+                                              , transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
 import qualified Haskore.Melody as Melody (note)
 import qualified Haskore.Melody.Standard as Melody (T, na)
 import qualified Haskore.Music as Music (Dur, chord, line, rest)
-import qualified Haskore.Music.GeneralMIDI as MIDIMusic (Instrument(..), T, fromStdMelody)
+import qualified Haskore.Music.GeneralMIDI as MIDIMusic ( Instrument(..), T
+                                                        , fromStdMelody)
 import qualified Haskore.Process.Optimization as Optimize
 import           Numeric.NonNegative.Wrapper (toNumber)
 import qualified Sound.MIDI.File.Save as SaveMIDI
-import           Text.Parsec ( Parsec(..), SourceName, SourcePos
+import           Text.Parsec ( Parsec, SourceName, SourcePos
                              , getPosition, getState
                              , lookAhead, newline, putState, runParser
                              , satisfy, sepBy, sepBy1, space, try, (<?>))
@@ -45,15 +53,16 @@ import           Text.Parsec.Error (ParseError)
 --     ctorName :: Int -> String
 --     ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..5] . testBit
 
-data SixDots = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123 | Dot4
-             | Dot14 | Dot24 | Dot124 | Dot34 | Dot134 | Dot234 | Dot1234 | Dot5
-             | Dot15 | Dot25 | Dot125 | Dot35 | Dot135 | Dot235 | Dot1235 | Dot45
-             | Dot145 | Dot245 | Dot1245 | Dot345 | Dot1345 | Dot2345 | Dot12345
-             | Dot6 | Dot16 | Dot26 | Dot126 | Dot36 | Dot136 | Dot236 | Dot1236
-             | Dot46 | Dot146 | Dot246 | Dot1246 | Dot346 | Dot1346 | Dot2346
-             | Dot12346 | Dot56 | Dot156 | Dot256 | Dot1256 | Dot356 | Dot1356
-             | Dot2356 | Dot12356 | Dot456 | Dot1456 | Dot2456 | Dot12456 | Dot3456
-             | Dot13456 | Dot23456 | Dot123456
+data SixDots = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123
+             | Dot4 | Dot14 | Dot24 | Dot124 | Dot34 | Dot134 | Dot234
+             | Dot1234 | Dot5 | Dot15 | Dot25 | Dot125 | Dot35 | Dot135
+             | Dot235 | Dot1235 | Dot45 | Dot145 | Dot245 | Dot1245 | Dot345
+             | Dot1345 | Dot2345 | Dot12345 | Dot6 | Dot16 | Dot26 | Dot126
+             | Dot36 | Dot136 | Dot236 | Dot1236 | Dot46 | Dot146 | Dot246
+             | Dot1246 | Dot346 | Dot1346 | Dot2346 | Dot12346 | Dot56 | Dot156
+             | Dot256 | Dot1256 | Dot356 | Dot1356 | Dot2356 | Dot12356
+             | Dot456 | Dot1456 | Dot2456 | Dot12456 | Dot3456 | Dot13456
+             | Dot23456 | Dot123456
              deriving (Bounded, Enum, Eq, Read, Show)
 
 -- | Convert to Unicode Braille.
@@ -338,7 +347,7 @@ notegroup = do x:xs <- gets snd
 -- | Like 'span' but gives all combinations till predicate fails.
 spans :: (a -> Bool) -> [a] -> [([a], [a])]
 spans = go [] where
-  go i _ []     = []
+  go _ _ []     = []
   go i p (x:xs) | p x       = let i' = i++[x] in (i',xs) : go i' p xs
                 | otherwise = []
 
@@ -369,8 +378,8 @@ data SemanticError = EmptyVoice
 
     
 
-data Error = Syntax ParseError
-           | Semantic SemanticError
+data Error = Syntax ParseError      -- ^ Error while parsing input.
+           | Semantic SemanticError -- ^ Error in the post-processing phase.
            deriving (Show)
 
 -- | Test measure disambiguation.
