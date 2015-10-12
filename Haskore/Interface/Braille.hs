@@ -5,7 +5,7 @@ module Haskore.Interface.Braille (
 ) where
 
 import           Control.Applicative (many, optional, pure, some, (<$>), (<*>), (*>), (<|>))
-import           Control.Monad (ap, guard, liftM)
+import           Control.Monad (ap, guard, liftM, when)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
@@ -175,16 +175,14 @@ noteP = try parseNote where
   pitchP = do o <- optional octaveP
               c <- lookAhead stepP
               case o of
-                Just o -> savePitch (o, c)
+                Just o  -> savePitch (o, c)
                 Nothing -> do p' <- getState
                               case p' of
-                                Nothing -> fail "Missing octave mark"
                                 Just p' -> savePitch $ determineOctave p' c
+                                Nothing -> fail "Missing octave mark"
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
 determineOctave :: Pitch.T -> Pitch.Class -> Pitch.T
--- | Given a known previous pitch, enhance a pitch class to a pair of
--- (Pitch.Octave, Pitch.Class).
 determineOctave (o, Pitch.A) c@Pitch.C = (o+1, c)
 determineOctave (o, Pitch.B) c@Pitch.C = (o+1, c)
 determineOctave (o, Pitch.B) c@Pitch.D = (o+1, c)
@@ -216,11 +214,16 @@ partialVoiceP = some $ noteP <|> restP
 -- | A partial measure contains parallel partial voices.
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
 
+forgetPitch :: Parser ()
+forgetPitch = putState Nothing
+
+parallelSepBy1 :: Parser a -> Parser b -> Parser [a]
+parallelSepBy1 p sep = do xs <- sepBy1 p $ sep *> forgetPitch
+                          when (length xs > 1) forgetPitch
+                          pure xs
+
 partialMeasureP :: Parser AmbiguousPartialMeasure
-partialMeasureP = do xs <- sepBy1 partialVoiceP $
-                           brl Dot5 *> brl Dot2 *> putState Nothing
-                     if length xs > 1 then putState Nothing else return ()
-                     return xs
+partialMeasureP = parallelSepBy1 partialVoiceP $ brl Dot5 *> brl Dot2
 
 -- | A voice consists of one or more serial partial measures.
 type AmbiguousVoice = [AmbiguousPartialMeasure]
@@ -232,10 +235,7 @@ voiceP = sepBy1 partialMeasureP $ brl Dot46 *> brl Dot13
 type AmbiguousMeasure = [AmbiguousVoice]
 
 measureP :: Parser AmbiguousMeasure
-measureP = do xs <- sepBy1 voiceP $
-                    brl Dot126 *> brl Dot345 *> putState Nothing
-              if length xs > 1 then putState Nothing else return ()
-              return xs
+measureP = parallelSepBy1 voiceP $ brl Dot126 *> brl Dot345
 
 measureSepP :: Parser ()
 measureSepP =  (space *> return ())
@@ -243,7 +243,7 @@ measureSepP =  (space *> return ())
            <|> (newline *> return ())
 
 sectionP :: Parser [AmbiguousMeasure]
-sectionP = sepBy measureP measureSepP
+sectionP = sepBy1 measureP measureSepP
 
 -- With the basic data structure defined and parsed into, we can finally
 -- move towards the actually interesting task of disambiguating values.
