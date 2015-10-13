@@ -10,6 +10,7 @@ module Haskore.Interface.Braille (
 
 import           Control.Applicative ( many, optional, pure, some
                                      , (<$>), (<*>), (*>), (<|>))
+import           Control.Exception (assert)
 import           Control.Monad (ap, guard, liftM, when)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
@@ -21,9 +22,11 @@ import           Data.Foldable (asum, fold)
 import           Data.Function (on)
 import           Data.Functor (($>))
 import           Data.List (foldl', sortBy)
+import           Data.Map (Map)
+import qualified Data.Map as Map (adjust, findWithDefault, fromList)
 import           Data.Monoid (mempty, mconcat)
 import           Data.Ord (comparing)
-import           Data.Traversable (traverse, sequenceA)
+import           Data.Traversable (mapAccumL, traverse, sequenceA)
 import qualified Haskore.Basic.Pitch as Pitch ( Class(..), Octave, T, Relative
                                               , transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -142,6 +145,7 @@ data AmbiguousSign =
                    , ambiguousValue            :: AmbiguousValue
                    , ambiguousAugmentationDots :: AugmentationDots
                    , ambiguousEnd              :: SourcePos
+                   , calculatedAlteration      :: Pitch.Relative
                    }
    | AmbiguousRest { ambiguousBegin            :: SourcePos
                    , ambiguousValue            :: AmbiguousValue
@@ -154,6 +158,62 @@ data AmbiguousSign =
 savePitch :: Pitch.T -> Parser Pitch.T
 savePitch = ap ((*>) . putState . Just) pure
 
+forgetPitch :: Parser ()
+forgetPitch = putState Nothing
+
+update :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
+update (a, b, c, d) f m = updL a (updatev (b, c, d) f) m where
+  updatev (b, c, d) f l = updL b (updatepm (c, d) f) l
+  updatepm (c, d) f l = updL c (updatepv d f) l
+  updatepv d f (PartialVoice d' l) = PartialVoice d' $ updL d f l
+  updL i f l = snd $ mapAccumL (\i' x -> (i'+1, if i==i' then f x else x)) 0 l
+
+sortedIndices :: Measure -> [(Sign, (Int, Int, Int, Int))]
+sortedIndices m = map snd $ sortBy (comparing fst) $
+                  concat $ snd $ mapAccumL ( \ ix x -> (ix+1, h ix 0 x) ) 0
+                  m where
+  h a pos v = concat $ snd $ mapAccumL
+              ( \ (ix, pos) x -> ((ix+1, pos + dur x), g (a, ix) pos x) ) (0, pos)
+              v where
+    g (a, b) pos pm = concat $ snd $ mapAccumL
+                      (\ ix pv -> (ix+1, f (a, b, ix) pos pv) ) 0 pm where
+      f (a, b, c) pos pv@(PartialVoice d xs) =
+        snd $ mapAccumL
+        ( \ (ix, pos) x -> ((ix+1, pos + dur x), (pos, (x, (a, b, c, ix)))) ) (0, pos)
+        xs
+
+type AccidentalMap = Map Pitch.T Pitch.Relative
+
+diatonicSteps :: [Pitch.Class]
+diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
+
+fifths :: (Ord a, Num a, Num b) => a -> [b]
+fifths n | n == 0 = replicate 7 0
+fifths n | n > 0  = case fifths (n-1) of [a, b, c, d, e, f, g] -> [d, e, f, g+1, a, b, c]
+         | n < 0  = case fifths (n+1) of [a, b, c, d, e, f, g] -> [e, f, g, a, b, c, d-1]
+
+accidentals :: Int -> AccidentalMap
+accidentals f = Map.fromList [ ((o,c),a)
+                             | o <- [0..11],
+                               (c,a) <- zip diatonicSteps (fifths f)]
+
+calculateAlterations :: AccidentalMap -> Measure -> (Measure, AccidentalMap)
+calculateAlterations f m = foldl' visit (m, f) (sortedIndices m) where
+  visit (m, acc) (s@(Note d u), ix) =
+    let acc' = case ambiguousAccidental u of
+                 Just a -> Map.adjust (const (alter a)) (ambiguousPitch u) acc
+                 Nothing -> acc in
+    ( update ix (upd $ Map.findWithDefault 0 (ambiguousPitch u) acc') m
+    , acc') where
+    upd alt (Note v a) = Note v $ a { calculatedAlteration = alt }
+    upd alt x = x
+  visit (m, acc) _ = (m, acc)
+
+parallelSepBy1 :: Parser a -> Parser b -> Parser [a]
+parallelSepBy1 p sep = do xs <- sepBy1 p $ sep *> forgetPitch
+                          when (length xs > 1) forgetPitch
+                          pure xs
+
 -- | Parse a Braille music note.
 noteP :: Parser AmbiguousSign
 noteP = try parseNote where
@@ -163,6 +223,7 @@ noteP = try parseNote where
                             <*> ambiguousValueP
                             <*> augmentationDotsP
                             <*> getPosition
+                            <*> pure 0
                             <?> "note"
   ambiguousValueP = anyBrl >>= getValue where
     getValue d = pure $ case mask Dot36 d of
@@ -212,6 +273,9 @@ restP = AmbiguousRest <$> getPosition
                            , brl Dot1346 $> EighthOr128th
                            ]
 
+newtype Parallel a = Parallel [a]
+newtype Sequential a = Sequential [a]
+
 -- | A Braille music measure can contain parallel and serial music.
 -- The inner most voice is called partial voice because it can potentially
 -- span just across a part of the whole measure.
@@ -222,14 +286,6 @@ partialVoiceP = some $ noteP <|> restP
 
 -- | A partial measure contains parallel partial voices.
 type AmbiguousPartialMeasure = [AmbiguousPartialVoice]
-
-forgetPitch :: Parser ()
-forgetPitch = putState Nothing
-
-parallelSepBy1 :: Parser a -> Parser b -> Parser [a]
-parallelSepBy1 p sep = do xs <- sepBy1 p $ sep *> forgetPitch
-                          when (length xs > 1) forgetPitch
-                          pure xs
 
 partialMeasureP :: Parser AmbiguousPartialMeasure
 partialMeasureP = parallelSepBy1 partialVoiceP $ brl Dot5 *> brl Dot2
@@ -410,12 +466,12 @@ measureToHaskore = Music.chord . map v where
       pv (PartialVoice _ xs) = Music.line $ map conv xs where
         conv (Rest duration _) = Music.rest duration
         conv (Note duration u) = Melody.note pitch duration Melody.na where
-          pitch = Pitch.transpose 0 $ ambiguousPitch u
+          pitch = Pitch.transpose (calculatedAlteration u) $ ambiguousPitch u
 
 toStdMelody :: Music.Dur -> String -> Either Error Melody.T
 toStdMelody l b = do ms <- testms l b
                      either (const $ Left $ Semantic EmptyVoice)
-                            (Right . measureToHaskore)
+                            (Right . measureToHaskore . fst . calculateAlterations (accidentals 0))
                             (pick ms)
 
 song :: Melody.T -> MIDIMusic.T
