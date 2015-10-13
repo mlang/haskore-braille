@@ -161,27 +161,6 @@ savePitch = ap ((*>) . putState . Just) pure
 forgetPitch :: Parser ()
 forgetPitch = putState Nothing
 
-update :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
-update (a, b, c, d) f m = updL a (updatev (b, c, d) f) m where
-  updatev (b, c, d) f l = updL b (updatepm (c, d) f) l
-  updatepm (c, d) f l = updL c (updatepv d f) l
-  updatepv d f (PartialVoice d' l) = PartialVoice d' $ updL d f l
-  updL i f l = snd $ mapAccumL (\i' x -> (i'+1, if i==i' then f x else x)) 0 l
-
-sortedIndices :: Measure -> [(Sign, (Int, Int, Int, Int))]
-sortedIndices m = map snd $ sortBy (comparing fst) $
-                  concat $ snd $ mapAccumL ( \ ix x -> (ix+1, h ix 0 x) ) 0
-                  m where
-  h a pos v = concat $ snd $ mapAccumL
-              ( \ (ix, pos) x -> ((ix+1, pos + dur x), g (a, ix) pos x) ) (0, pos)
-              v where
-    g (a, b) pos pm = concat $ snd $ mapAccumL
-                      (\ ix pv -> (ix+1, f (a, b, ix) pos pv) ) 0 pm where
-      f (a, b, c) pos pv@(PartialVoice d xs) =
-        snd $ mapAccumL
-        ( \ (ix, pos) x -> ((ix+1, pos + dur x), (pos, (x, (a, b, c, ix)))) ) (0, pos)
-        xs
-
 type AccidentalMap = Map Pitch.T Pitch.Relative
 
 diatonicSteps :: [Pitch.Class]
@@ -189,17 +168,39 @@ diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
 
 fifths :: (Ord a, Num a, Num b) => a -> [b]
 fifths n | n == 0 = replicate 7 0
-fifths n | n > 0  = case fifths (n-1) of [a, b, c, d, e, f, g] -> [d, e, f, g+1, a, b, c]
-         | n < 0  = case fifths (n+1) of [a, b, c, d, e, f, g] -> [e, f, g, a, b, c, d-1]
+fifths n | n >  0 = let [a,b,c,d,e,f,g] = fifths (n-1) in [d,e,f,g+1,a,b,c]
+         | n <  0 = let [a,b,c,d,e,f,g] = fifths (n+1) in [e,f,g,a,b,c,d-1]
 
 accidentals :: Int -> AccidentalMap
-accidentals f = Map.fromList [ ((o,c),a)
-                             | o <- [0..11],
-                               (c,a) <- zip diatonicSteps (fifths f)]
+accidentals f = Map.fromList [ ((o, c), a)
+                             | o <- [0..11]
+                             , (c, a) <- zip diatonicSteps $ fifths f
+                             ]
 
 calculateAlterations :: AccidentalMap -> Measure -> (Measure, AccidentalMap)
-calculateAlterations f m = foldl' visit (m, f) (sortedIndices m) where
-  visit (m, acc) (s@(Note d u), ix) =
+calculateAlterations acc m = foldl' visit (m, acc) (sortedIndices m) where
+  update :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
+  update (a, b, c, d) f m = updL a (updatev (b, c, d)) m where
+    updatev (b, c, d) l = updL b (updatepm (c, d)) l
+    updatepm (c, d) l = updL c (updatepv d) l
+    updatepv d (PartialVoice d' l) = PartialVoice d' $ updL d f l
+    updL i f l = snd $ mapAccumL (\i' x -> (i'+1, if i==i' then f x else x)) 0 l
+
+  sortedIndices :: Measure -> [(Sign, (Int, Int, Int, Int))]
+  sortedIndices m = map snd $ sortBy (comparing fst) $
+                    concat $ snd $ mapAccumL ( \ ix x -> (ix+1, h ix 0 x) ) 0
+                    m where
+    h a pos v = concat $ snd $ mapAccumL
+                ( \ (ix, pos) x -> ((ix+1, pos + dur x), g (a, ix) pos x) ) (0, pos)
+                v where
+      g (a, b) pos pm = concat $ snd $ mapAccumL
+                        (\ ix pv -> (ix+1, f (a, b, ix) pos pv) ) 0 pm where
+        f (a, b, c) pos pv@(PartialVoice d xs) =
+          snd $ mapAccumL
+          ( \ (ix, pos) x -> ((ix+1, pos + dur x), (pos, (x, (a, b, c, ix)))) ) (0, pos)
+          xs
+
+  visit (m, acc) (Note d u, ix) =
     let acc' = case ambiguousAccidental u of
                  Just a -> Map.adjust (const (alter a)) (ambiguousPitch u) acc
                  Nothing -> acc in
