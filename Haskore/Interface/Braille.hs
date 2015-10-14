@@ -23,7 +23,7 @@ import           Data.Function (on)
 import           Data.Functor (($>))
 import           Data.List (foldl', sortBy)
 import           Data.Map (Map)
-import qualified Data.Map as Map (adjust, findWithDefault, fromList)
+import qualified Data.Map as Map (alter, findWithDefault, fromList)
 import           Data.Monoid (mempty, mconcat)
 import           Data.Ord (comparing)
 import           Data.Traversable (mapAccumL, traverse, sequenceA)
@@ -163,24 +163,23 @@ forgetPitch = putState Nothing
 
 type AccidentalMap = Map Pitch.T Pitch.Relative
 
-diatonicSteps :: [Pitch.Class]
-diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
-
-fifths :: (Ord a, Num a, Num b) => a -> [b]
-fifths n | n == 0 = replicate 7 0
-fifths n | n >  0 = let [a,b,c,d,e,f,g] = fifths (n-1) in [d,e,f,g+1,a,b,c]
-         | n <  0 = let [a,b,c,d,e,f,g] = fifths (n+1) in [e,f,g,a,b,c,d-1]
 
 accidentals :: Int -> AccidentalMap
 accidentals f = Map.fromList [ ((o, c), a)
                              | o <- [0..11]
                              , (c, a) <- zip diatonicSteps $ fifths f
-                             ]
+                             , a /= 0
+                             ] where
+  diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
+  fifths n | n == 0 = replicate 7 0
+  fifths n | n >  0 = let [a,b,c,d,e,f,g] = fifths (n-1) in [d,e,f,g+1,a,b,c]
+           | n <  0 = let [a,b,c,d,e,f,g] = fifths (n+1) in [e,f,g,a,b,c,d-1]
+
 
 calculateAlterations :: AccidentalMap -> Measure -> (Measure, AccidentalMap)
 calculateAlterations acc m = foldl' visit (m, acc) (sortedIndices m) where
-  update :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
-  update (a, b, c, d) f m = updL a (updatev (b, c, d)) m where
+  updateMeasure :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
+  updateMeasure (a, b, c, d) f m = updL a (updatev (b, c, d)) m where
     updatev (b, c, d) l = updL b (updatepm (c, d)) l
     updatepm (c, d) l = updL c (updatepv d) l
     updatepv d (PartialVoice d' l) = PartialVoice d' $ updL d f l
@@ -202,12 +201,12 @@ calculateAlterations acc m = foldl' visit (m, acc) (sortedIndices m) where
 
   visit (m, acc) (Note d u, ix) =
     let acc' = case ambiguousAccidental u of
-                 Just a -> Map.adjust (const (alter a)) (ambiguousPitch u) acc
-                 Nothing -> acc in
-    ( update ix (upd $ Map.findWithDefault 0 (ambiguousPitch u) acc') m
-    , acc') where
-    upd alt (Note v a) = Note v $ a { calculatedAlteration = alt }
-    upd alt x = x
+                 Just a -> Map.alter (const $ Just $ alter a) (ambiguousPitch u) acc
+                 Nothing -> acc
+        a = Map.findWithDefault 0 (ambiguousPitch u) acc'
+    in (updateMeasure ix (updateAlter a) m, acc') where
+      updateAlter a (Note v u) = Note v $ u { calculatedAlteration = a }
+      updateAlter _ x = x
   visit (m, acc) _ = (m, acc)
 
 parallelSepBy1 :: Parser a -> Parser b -> Parser [a]
