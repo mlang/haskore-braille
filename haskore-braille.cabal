@@ -14,36 +14,34 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 Library
-  build-depends:       base >=4.7
-                     , containers >= 0.5.5.1
-                     , haskore >= 0.2.0.7
-                     , midi >= 0.2.1.5
-                     , monad-loops
-                     , mtl
-                     , non-negative >= 0.1.1
-                     , parsec >=3.1.9
-                     , transformers
-                     , transformers-compat >= 0.4.0.3
-  exposed-modules:     Haskore.Interface.Braille
-  ghc-options:         -Wall
-  default-language:    Haskell2010
+  hs-source-dirs:   src
+  build-depends:    base >=4.7
+                  , containers >= 0.5.5.1
+                  , haskore >= 0.2.0.7
+                  , midi >= 0.2.1.5
+                  , monad-loops
+                  , mtl
+                  , non-negative >= 0.1.1
+                  , parsec >=3.1.9
+                  , transformers
+                  , transformers-compat >= 0.4.0.3
+  exposed-modules:  Haskore.Interface.Braille
+                  , Haskore.Interface.Braille.TextTables
+  ghc-options:      -Wall
+  default-language: Haskell2010
 
 Executable playbraille
-  main-is:     PlayBraille.hs
-  ghc-options: -Wall
-  build-depends: base >= 4.7 && < 5
-               , containers >= 0.5.5.1
-               , haskore
-               , haskore-synthesizer
-               , midi
-               , monad-loops
-               , mtl
-               , non-negative
-               , numeric-prelude
-               , parsec
-               , synthesizer-core
-               , transformers
-  default-language:    Haskell2010
+  main-is:          playbraille.hs
+  ghc-options:      -Wall
+  build-depends:    base >= 4.7 && < 5
+                  , haskore
+                  , haskore-braille
+                  , haskore-synthesizer
+                  , midi
+                  , non-negative
+                  , numeric-prelude
+                  , synthesizer-core
+  default-language: Haskell2010
 
 source-repository head
   type: git

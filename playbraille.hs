@@ -2,7 +2,7 @@ module Main where
 
 import qualified Algebra.Ring as Ring (C)
 import qualified Haskore.Interface.Braille as Braille
-import qualified Haskore.Interface.Braille.TextTables as TextTables (Locale(..), braillify)
+import qualified Haskore.Interface.Braille.TextTables as TextTables (Locale(..), braillify, sixDots)
 import qualified Haskore.Interface.Signal.InstrumentMap as InstrumentMap
 import qualified Haskore.Interface.Signal.Write as MusicSignal
 import qualified Haskore.Melody.Standard as StdMelody
@@ -54,10 +54,13 @@ melodySignal instr mel =
 
 
 
+braillify :: TextTables.Locale -> String -> String
+braillify = TextTables.braillify TextTables.sixDots
+
 main :: IO ExitCode
 main = do [braille] <- getArgs
           either (\e -> print e >> exitFailure)
               (\mel -> Play.stereoToInt16 defltSampleRate $
                        melodySignal Bell $ Music.transpose (-24) $
                        Music.line [mel, Music.qnr, StdMelody.c 2 RhythmicMusic.qn StdMelody.na])
-              (Braille.toStdMelody 1 $ TextTables.braillify TextTables.German braille)
+              (Braille.toStdMelody 1 $ braillify TextTables.German braille)
