@@ -169,6 +169,7 @@ accidentals k = Map.fromList [ ((o, c), a)
                              , (c, a) <- zip diatonicSteps $ fifths k
                              , a /= 0
                              ] where
+  maxOctave = 9
   diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
   fifths n | n == 0 = replicate 7 0
   fifths n | n >  0 = let [a,b,c,d,e,f,g] = fifths (n-1) in [d,e,f,g+1,a,b,c]
