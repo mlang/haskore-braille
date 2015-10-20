@@ -163,11 +163,10 @@ forgetPitch = putState Nothing
 
 type AccidentalMap = Map Pitch.T Pitch.Relative
 
-
-accidentals :: Int -> AccidentalMap
-accidentals f = Map.fromList [ ((o, c), a)
-                             | o <- [0..11]
-                             , (c, a) <- zip diatonicSteps $ fifths f
+accidentals :: Int -> Map Pitch.T Pitch.Relative
+accidentals k = Map.fromList [ ((o, c), a)
+                             | o <- [0..maxOctave]
+                             , (c, a) <- zip diatonicSteps $ fifths k
                              , a /= 0
                              ] where
   diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
@@ -177,23 +176,21 @@ accidentals f = Map.fromList [ ((o, c), a)
 
 
 calculateAlterations :: AccidentalMap -> Measure -> (Measure, AccidentalMap)
-calculateAlterations acc m = foldl' visit (m, acc) (sortedIndices m) where
+calculateAlterations acc m = foldl' visit (m, acc) (timewise m) where
   updateMeasure :: (Int, Int, Int, Int) -> (Sign -> Sign) -> Measure -> Measure
   updateMeasure (a, b, c, d) f m = updL a (updatev (b, c, d)) m where
-    updatev (b, c, d) l = updL b (updatepm (c, d)) l
-    updatepm (c, d) l = updL c (updatepv d) l
-    updatepv d (PartialVoice d' l) = PartialVoice d' $ updL d f l
+    updatev (b, c, d) l = updL b (updatepm (c, d)) l where
+      updatepm (c, d) l = updL c (updatepv d) l where
+        updatepv d (PartialVoice d' l) = PartialVoice d' $ updL d f l
     updL i f l = snd $ mapAccumL (\i' x -> (i'+1, if i==i' then f x else x)) 0 l
 
-  sortedIndices :: Measure -> [(Sign, (Int, Int, Int, Int))]
-  sortedIndices m = map snd $ sortBy (comparing fst) $
-                    concat $ snd $ mapAccumL ( \ ix x -> (ix+1, h ix 0 x) ) 0
-                    m where
+  timewise :: Measure -> [(Sign, (Int, Int, Int, Int))]
+  timewise m = map snd $ sortBy (comparing fst) $
+               concat $ zipWith (\ ix x -> h ix 0 x) [0..] m where
     h a pos v = concat $ snd $ mapAccumL
                 ( \ (ix, pos) x -> ((ix+1, pos + dur x), g (a, ix) pos x) ) (0, pos)
                 v where
-      g (a, b) pos pm = concat $ snd $ mapAccumL
-                        (\ ix pv -> (ix+1, f (a, b, ix) pos pv) ) 0 pm where
+      g (a, b) pos pm = concat $ zipWith (\ ix pv -> f (a, b, ix) pos pv) [0..] pm where
         f (a, b, c) pos pv@(PartialVoice d xs) =
           snd $ mapAccumL
           ( \ (ix, pos) x -> ((ix+1, pos + dur x), (pos, (x, (a, b, c, ix)))) ) (0, pos)
@@ -465,8 +462,8 @@ measureToHaskore = Music.chord . map v where
     pm = Music.chord . map pv where
       pv (PartialVoice _ xs) = Music.line $ map conv xs where
         conv (Rest duration _) = Music.rest duration
-        conv (Note duration u) = Melody.note pitch duration Melody.na where
-          pitch = Pitch.transpose (calculatedAlteration u) $ ambiguousPitch u
+        conv (Note duration u) = Melody.note (pitch u) duration Melody.na where
+          pitch = Pitch.transpose <$> calculatedAlteration <*> ambiguousPitch
 
 toStdMelody :: Music.Dur -> String -> Either Error Melody.T
 toStdMelody l b = do ms <- testms l b
