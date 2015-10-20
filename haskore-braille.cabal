@@ -1,30 +1,29 @@
-name:                haskore-braille
-version:             0.1.0.0
-synopsis:            Braille music code interface for Haskore
+name:               haskore-braille
+version:            0.1.0.0
+synopsis:           Braille music code interface for Haskore
 description:
 
   Convert Braille music code to Haskore melodies.
 
-license:             GPL-3
-license-file:        LICENSE
-author:              Mario Lang
-maintainer:          mlang@delysid.org
-category:            Music
-build-type:          Simple
-cabal-version:       >=1.10
+license:            GPL-3
+license-file:       LICENSE
+author:             Mario Lang
+maintainer:         mlang@delysid.org
+category:           Music
+build-type:         Simple
+cabal-version:      >= 1.10
 
 Library
   hs-source-dirs:   src
-  build-depends:    base >=4.7
+  build-depends:    base >= 4.7
                   , containers >= 0.5.5.1
                   , haskore >= 0.2.0.7
                   , midi >= 0.2.1.5
-                  , monad-loops
-                  , mtl
+                  , monad-loops >= 0.4.3
+                  , mtl >= 2.1.1
                   , non-negative >= 0.1.1
-                  , parsec >=3.1.9
-                  , transformers
-                  , transformers-compat >= 0.4.0.3
+                  , parsec >= 3.1.9
+                  , transformers >= 0.3.0.0
   exposed-modules:  Haskore.Interface.Braille
                   , Haskore.Interface.Braille.TextTables
   ghc-options:      -Wall
@@ -33,14 +32,12 @@ Library
 Executable playbraille
   main-is:          playbraille.hs
   ghc-options:      -Wall
-  build-depends:    base >= 4.7 && < 5
-                  , haskore
-                  , haskore-braille
-                  , haskore-synthesizer
-                  , midi
-                  , non-negative
-                  , numeric-prelude
-                  , synthesizer-core
+  build-depends:    base >= 4.7
+                  , haskore >= 0.2.0.7
+                  , haskore-braille >= 0.1.0.0
+                  , haskore-synthesizer >= 0.0.3.2
+                  , numeric-prelude >= 0.4.2
+                  , synthesizer-core >= 0.7.1
   default-language: Haskell2010
 
 source-repository head
