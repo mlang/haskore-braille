@@ -8,25 +8,26 @@ module Haskore.Interface.Braille (
 , toStdMelody
 ) where
 
-import           Control.Applicative ( Applicative, many, optional, pure, some
-                                     , (<$>), (<*>), (*>), (<|>))
-import           Control.Exception (assert)
+import           Control.Applicative ( Alternative((<|>))
+                                     , Applicative(pure, (<*>))
+                                     , many, optional, some, (<$>), (*>))
 import           Control.Monad (ap, guard, liftM, when)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State ( StateT(..)
                                            , evalStateT, get, gets, put)
-import           Data.Bits ((.&.))
-import           Data.Foldable (Foldable, asum, concatMap, fold, sum)
+import           Data.Bits (Bits((.&.)))
+import           Data.Foldable ( Foldable(fold, foldl')
+                               , asum, concat, concatMap, sum, toList)
 import           Data.Function (on)
 import           Data.Functor (($>))
-import           Data.List (foldl', sortBy)
+import           Data.List (sortBy)
 import           Data.Map (Map)
-import qualified Data.Map as Map (alter, findWithDefault, fromList)
-import           Data.Monoid (Monoid, mempty, mappend, mconcat)
+import qualified Data.Map as Map (findWithDefault, fromList, insert)
+import           Data.Monoid (Monoid(mempty, mappend), mconcat)
 import           Data.Ord (comparing)
-import           Data.Traversable (Traversable, mapAccumL, traverse, sequenceA)
+import           Data.Traversable (Traversable(sequenceA, traverse), mapAccumL)
 import qualified Haskore.Basic.Pitch as Pitch ( Class(..), Octave, T, Relative
                                               , transpose)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
@@ -35,14 +36,13 @@ import qualified Haskore.Melody.Standard as Melody (T, na)
 import qualified Haskore.Music as Music (Dur, chord, line, rest)
 import qualified Haskore.Music.GeneralMIDI as MIDIMusic ( Instrument(..), T
                                                         , fromStdMelody)
-import qualified Haskore.Process.Optimization as Optimize
 import           Numeric.NonNegative.Wrapper (toNumber)
-import           Prelude hiding (concatMap, sum)
+import           Prelude hiding (concat, concatMap, sum)
 import qualified Sound.MIDI.File.Save as SaveMIDI
 import           Text.Parsec ( Parsec, SourceName, SourcePos
                              , getPosition, getState
                              , lookAhead, newline, putState, runParser
-                             , satisfy, sepBy, sepBy1, space, try, (<?>))
+                             , satisfy, sepBy1, space, try, (<?>))
 import           Text.Parsec.Combinator (choice)
 import           Text.Parsec.Error (ParseError)
 
@@ -157,7 +157,7 @@ data AmbiguousSign =
           deriving (Eq, Show)
 
 savePitch :: Pitch.T -> Parser Pitch.T
-savePitch = ap ((*>) . putState . Just) pure
+savePitch = (*>) . putState . Just <*> pure
 
 forgetPitch :: Parser ()
 forgetPitch = putState Nothing
@@ -193,21 +193,21 @@ noteP = try parseNote where
   pitchP = do o <- optional octaveP
               c <- lookAhead stepP
               case o of
-                Just o  -> savePitch (o, c)
-                Nothing -> do p' <- getState
-                              case p' of
-                                Just p' -> savePitch $ determineOctave p' c
+                Just o'  -> savePitch (o', c)
+                Nothing -> do p <- getState
+                              case p of
+                                Just p' -> savePitch $ nextPitch p' c
                                 Nothing -> fail "Missing octave mark"
   mask m dots = toEnum (fromEnum dots .&. fromEnum m)
 
-determineOctave :: Pitch.T -> Pitch.Class -> Pitch.T
-determineOctave (o, Pitch.A) c@Pitch.C = (o+1, c)
-determineOctave (o, Pitch.B) c@Pitch.C = (o+1, c)
-determineOctave (o, Pitch.B) c@Pitch.D = (o+1, c)
-determineOctave (o, Pitch.D) c@Pitch.B = (o-1, c)
-determineOctave (o, Pitch.C) c@Pitch.B = (o-1, c)
-determineOctave (o, Pitch.C) c@Pitch.A = (o-1, c)
-determineOctave (o, _)       c         = (o,   c)
+nextPitch :: Pitch.T -> Pitch.Class -> Pitch.T
+nextPitch (o, Pitch.A) c@Pitch.C = (o+1, c)
+nextPitch (o, Pitch.B) c@Pitch.C = (o+1, c)
+nextPitch (o, Pitch.B) c@Pitch.D = (o+1, c)
+nextPitch (o, Pitch.D) c@Pitch.B = (o-1, c)
+nextPitch (o, Pitch.C) c@Pitch.B = (o-1, c)
+nextPitch (o, Pitch.C) c@Pitch.A = (o-1, c)
+nextPitch (o, _)       c         = (o,   c)
 
 -- | Parse a Braille music rest.
 restP :: Parser AmbiguousSign
@@ -222,13 +222,8 @@ restP = AmbiguousRest <$> getPosition
                            ]
 
 newtype Parallel a
-      = Parallel { unParallel :: [a] }
-      deriving ( Foldable
-               , Functor
-               , Read
-               , Show
-               , Traversable
-               )
+      = Parallel [a]
+      deriving (Foldable, Functor, Read, Show, Traversable)
 
 instance HasDuration a => HasDuration (Parallel a) where
   dur (Parallel [])    = 0
@@ -240,18 +235,10 @@ parallelSepBy1 p sep = do xs <- sepBy1 p $ sep *> forgetPitch
                           pure $ Parallel xs
 
 newtype Sequential a
-      = Sequential { unSequential :: [a] }
-      deriving ( Applicative
-               , Foldable
-               , Functor
-               , Monoid
-               , Read
-               , Show
-               , Traversable
-               )
+      = Sequential [a]
+      deriving (Applicative, Foldable, Functor, Monoid, Read, Show, Traversable)
 
-instance HasDuration a => HasDuration (Sequential a) where
-  dur = sum . fmap dur
+instance HasDuration a => HasDuration (Sequential a) where dur = sum . fmap dur
 
 -- | A Braille music measure can contain parallel and serial music.
 -- The inner most voice is called partial voice because it can potentially
@@ -265,7 +252,8 @@ partialVoiceP = Sequential <$> some (noteP <|> restP)
 type AmbiguousPartialMeasure = Parallel AmbiguousPartialVoice
 
 partialMeasureP :: Parser AmbiguousPartialMeasure
-partialMeasureP = parallelSepBy1 partialVoiceP $ brl Dot5 *> brl Dot2
+partialMeasureP = parallelSepBy1 partialVoiceP
+                $ brl Dot5 *> brl Dot2
 
 -- | A voice consists of one or more sequential partial measures.
 type AmbiguousVoice = Sequential AmbiguousPartialMeasure
@@ -278,7 +266,8 @@ voiceP = Sequential <$> sepBy1 partialMeasureP sep where
 type AmbiguousMeasure = Parallel AmbiguousVoice
 
 measureP :: Parser AmbiguousMeasure
-measureP = parallelSepBy1 voiceP $ brl Dot126 *> brl Dot345
+measureP = parallelSepBy1 voiceP
+         $ brl Dot126 *> brl Dot345
 
 measureSepP :: Parser ()
 measureSepP =  (space *> return ())
@@ -295,7 +284,6 @@ data Sign = Note { realValue :: Music.Dur, ambiguous :: AmbiguousSign }
           | Rest { realValue :: Music.Dur, ambiguous :: AmbiguousSign }
           -- more to be added (Chord, ...)
           deriving (Eq, Show)
-
 instance HasDuration Sign where
   dur = (*) <$> realValue
             <*> augmentationDotsFactor . ambiguousAugmentationDots . ambiguous
@@ -380,7 +368,8 @@ type PVDisambiguator = Disambiguator
                        SemanticError (Sequential Sign)
 
 allWhich :: PVDisambiguator -> PVDisambiguator
-allWhich p = liftM fold $ p `untilM` gets (null . unSequential . snd)
+-- In newer GHC, null . Foldable.toList = Foldable.null
+allWhich = liftM fold . (`untilM` gets $ null . toList . snd)
 
 one :: (AmbiguousValue -> Music.Dur) -> PVDisambiguator
 one mk = do (l, Sequential (x:xs)) <- get
@@ -411,7 +400,7 @@ spans = go mempty where
                 | otherwise = []
 
 flatten :: Measure -> [Sign]
-flatten = concatMap $ concatMap $ concatMap $ unSequential . pvContent
+flatten = concatMap $ concatMap $ concatMap $ toList . pvContent
 
 harmonicMean :: Fractional a => [a] -> a
 harmonicMean = uncurry (flip (/)) . foldl' (\(x, y) n -> (x+1/n, y+1)) (0, 0)
@@ -444,33 +433,38 @@ accidentals k = Map.fromList [ ((o, c), a)
                              ] where
   maxOctave = 9
   diatonicSteps = [Pitch.C, Pitch.D, Pitch.E, Pitch.F, Pitch.G, Pitch.A, Pitch.B]
-  fifths n | n == 0 = replicate 7 0
-  fifths n | n >  0 = let [a,b,c,d,e,f,g] = fifths (n-1) in [d,e,f,g+1,a,b,c]
-           | n <  0 = let [a,b,c,d,e,f,g] = fifths (n+1) in [e,f,g,a,b,c,d-1]
+  fifths n | n > 0 = rotateR 4 $ case rotateR 6 $ fifths $ n-1 of x:xs -> succ x:xs
+           | n < 0 = rotateR 1 $ case rotateR 3 $ fifths $ n+1 of x:xs -> pred x:xs
+           | otherwise = replicate 7 0 where
+    rotateR n = zipWith const <$> drop n . cycle <*> id
+
+type MeasureAddress = (Int, Int, Int, Int)
 
 calculateAlterations :: AccidentalMap -> Measure -> (AccidentalMap, Measure)
 calculateAlterations acc m = foldl' visit (acc, m) (timewise m) where
-  timewise :: Measure -> [(Sign, (Int, Int, Int, Int))]
-  timewise = map snd . sortBy (comparing fst) . concat .
-             zipWith3 twV [0..] (repeat 0) . unParallel where
-    twV a pos = concat . snd . mapAccumL accum (0, pos) . unSequential where
-      accum (ix, pos) x = ((ix+1, pos + dur x), twPM (a, ix) pos x) where
-        twPM (a, b) pos = concat .
-                          zipWith3 twPV [(a,b,ix) | ix <- [0..]] (repeat pos) .
-                          unParallel where
-          twPV (a, b, c) pos = snd . mapAccumL accum (0, pos) .
-                               unSequential . pvContent where
-            accum (ix, pos) x = ((ix+1, pos + dur x), (pos, (x, (a, b, c, ix))))
+  timewise :: Measure -> [(Sign, MeasureAddress)]
+  timewise = map snd . sortBy (comparing fst)
+           . concat . zipWith3 twV ((,,,) <$> [0..]) (repeat 0) . toList where
+    twV :: (Int -> Int -> Int -> MeasureAddress) -> Music.Dur -> Voice
+        -> [(Music.Dur, (Sign, MeasureAddress))]
+    twV a pos = concat . snd . mapAccumL accum (0, pos) where
+      accum (ix, pos) x = ((ix+1, pos + dur x), twPM (a ix) pos x) where
+        twPM :: (Int -> Int -> MeasureAddress) -> Music.Dur -> PartialMeasure
+             -> [(Music.Dur, (Sign, MeasureAddress))]
+        twPM a pos = concat . zipWith3 twPV (a <$> [0..]) (repeat pos) . toList where
+          twPV :: (Int -> MeasureAddress) -> Music.Dur -> PartialVoice
+               -> [(Music.Dur, (Sign, MeasureAddress))]
+          twPV a pos = toList . snd . mapAccumL accum (0, pos) . pvContent where
+            accum (ix, pos) x = ((ix+1, pos + dur x), (pos, (x, a ix)))
 
   visit :: (AccidentalMap, Measure) -> (Sign, (Int, Int, Int, Int))
         -> (AccidentalMap, Measure)
   visit (acc, m) (Note d u, ix) =
-    let acc' = case ambiguousAccidental u of
-                 Just a -> Map.alter (const $ Just $ alter a) (ambiguousPitch u) acc
-                 Nothing -> acc
+    let acc' = maybe acc (flip (Map.insert $ ambiguousPitch u) acc . alter)
+             $ ambiguousAccidental u
         a = Map.findWithDefault 0 (ambiguousPitch u) acc'
     in (acc', updateMeasure ix (updateAlter a) m) where
-      updateAlter a (Note v u) = Note v $ u { calculatedAlteration = a }
+      updateAlter a (Note d u) = Note d $ u { calculatedAlteration = a }
       updateAlter _ x = x
   visit (acc, m) _ = (acc, m)
 
@@ -513,20 +507,16 @@ test = let l = 3/2 in
 
 
 measureToHaskore :: Measure -> Melody.T
-measureToHaskore = chordMap voice where
-  chordMap :: (a -> Melody.T) -> Parallel a -> Melody.T
-  chordMap f = Music.chord . map f . unParallel
+measureToHaskore = Music.chord . toList . fmap voice where
   voice :: Voice -> Melody.T
-  voice = lineMap partialMeasure where
-    lineMap :: (a -> Melody.T) -> Sequential a -> Melody.T
-    lineMap f = Music.line . map f . unSequential
+  voice = Music.line . toList . fmap partialMeasure where
     partialMeasure :: PartialMeasure -> Melody.T
-    partialMeasure = chordMap partialVoice where
+    partialMeasure = Music.chord . toList . fmap partialVoice where
       partialVoice :: PartialVoice -> Melody.T
-      partialVoice = lineMap conv . pvContent where
+      partialVoice = Music.line . toList . fmap conv . pvContent where
         conv :: Sign -> Melody.T
-        conv (Rest duration _) = Music.rest duration
-        conv (Note duration u) = Melody.note (pitch u) duration Melody.na where
+        conv r@(Rest {}) = Music.rest $ dur r
+        conv n@(Note {ambiguous = u}) = Melody.note (pitch u) (dur n) Melody.na where
           pitch :: AmbiguousSign -> Pitch.T
           pitch = Pitch.transpose <$> calculatedAlteration <*> ambiguousPitch
 
