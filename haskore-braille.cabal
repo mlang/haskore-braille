@@ -24,8 +24,10 @@ Library
                   , non-negative >= 0.1.1
                   , parsec >= 3.1.9
                   , transformers >= 0.3.0.0
+                  , template-haskell
   exposed-modules:  Haskore.Interface.Braille
                   , Haskore.Interface.Braille.TextTables
+                  , Haskore.Interface.Braille.Utilities
   ghc-options:      -Wall
   default-language: Haskell2010
 

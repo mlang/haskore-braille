@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveTraversable, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveTraversable, GeneralizedNewtypeDeriving, TemplateHaskell #-}
 
 -- | Braille music to Haskore conversion functions.
 module Haskore.Interface.Braille (
@@ -11,14 +11,15 @@ module Haskore.Interface.Braille (
 import           Control.Applicative ( Alternative((<|>))
                                      , Applicative(pure, (<*>))
                                      , many, optional, some, (<$>), (*>))
-import           Control.Monad (ap, guard, liftM, when)
+import           Control.Arrow (Arrow((***)))
+import           Control.Monad (guard, liftM, when)
 import           Control.Monad.Error (throwError)
 import           Control.Monad.Loops (untilM)
 import           Control.Monad.Trans.List (ListT(..))
 import           Control.Monad.Trans.State ( StateT(..)
                                            , evalStateT, get, gets, put)
 import           Data.Bits (Bits((.&.)))
-import           Data.Foldable ( Foldable(fold, foldl')
+import           Data.Foldable ( Foldable(fold, foldl', foldr)
                                , asum, concat, concatMap, sum, toList)
 import           Data.Function (on)
 import           Data.Functor (($>))
@@ -30,6 +31,7 @@ import           Data.Ord (comparing)
 import           Data.Traversable (Traversable(sequenceA, traverse), mapAccumL)
 import qualified Haskore.Basic.Pitch as Pitch ( Class(..), Octave, T, Relative
                                               , transpose)
+import           Haskore.Interface.Braille.Utilities (makeDotsType)
 import qualified Haskore.Interface.MIDI.Render as MIDIRender
 import qualified Haskore.Melody as Melody (note)
 import qualified Haskore.Melody.Standard as Melody (T, na)
@@ -37,7 +39,7 @@ import qualified Haskore.Music as Music (Dur, chord, line, rest)
 import qualified Haskore.Music.GeneralMIDI as MIDIMusic ( Instrument(..), T
                                                         , fromStdMelody)
 import           Numeric.NonNegative.Wrapper (toNumber)
-import           Prelude hiding (concat, concatMap, sum)
+import           Prelude hiding (concat, concatMap, foldr, sum)
 import qualified Sound.MIDI.File.Save as SaveMIDI
 import           Text.Parsec ( Parsec, SourceName, SourcePos
                              , getPosition, getState
@@ -49,25 +51,7 @@ import           Text.Parsec.Error (ParseError)
 -- Braille music code only uses the old 6-dot system.  We enumerate all
 -- possible dot patterns to use the type system to avoid accidentally
 -- specifying invalid dot patterns in the source code.
---
--- genDataBraille :: String
--- genDataBraille =
---     "data Braille = " ++ intercalate " | " ctors ++ " deriving (Enum, Eq)" where
---   ctors = "NoDots" : map ctorName [1..63] where
---     ctorName :: Int -> String
---     ctorName = (++) "Dot" . concatMap (show . succ) . flip filter [0..5] . testBit
-
-data SixDots = NoDots | Dot1 | Dot2 | Dot12 | Dot3 | Dot13 | Dot23 | Dot123
-             | Dot4 | Dot14 | Dot24 | Dot124 | Dot34 | Dot134 | Dot234
-             | Dot1234 | Dot5 | Dot15 | Dot25 | Dot125 | Dot35 | Dot135
-             | Dot235 | Dot1235 | Dot45 | Dot145 | Dot245 | Dot1245 | Dot345
-             | Dot1345 | Dot2345 | Dot12345 | Dot6 | Dot16 | Dot26 | Dot126
-             | Dot36 | Dot136 | Dot236 | Dot1236 | Dot46 | Dot146 | Dot246
-             | Dot1246 | Dot346 | Dot1346 | Dot2346 | Dot12346 | Dot56 | Dot156
-             | Dot256 | Dot1256 | Dot356 | Dot1356 | Dot2356 | Dot12356
-             | Dot456 | Dot1456 | Dot2456 | Dot12456 | Dot3456 | Dot13456
-             | Dot23456 | Dot123456
-             deriving (Bounded, Enum, Eq, Read, Show)
+$(makeDotsType)
 
 -- | Convert to Unicode Braille.
 toChar :: SixDots -> Char
