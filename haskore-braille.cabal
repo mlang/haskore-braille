@@ -24,7 +24,7 @@ Library
                   , non-negative >= 0.1.1
                   , parsec >= 3.1.9
                   , transformers >= 0.3.0.0
-                  , template-haskell
+                  , template-haskell, braille-parsers
   exposed-modules:  Haskore.Interface.Braille
                   , Haskore.Interface.Braille.TextTables
                   , Haskore.Interface.Braille.Utilities

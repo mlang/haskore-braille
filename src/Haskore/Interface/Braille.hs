@@ -44,15 +44,14 @@ import           Text.Parsec ( Parsec, SourceName, SourcePos
                              , satisfy, sepBy1, space, try, (<?>))
 import           Text.Parsec.Combinator (choice)
 import           Text.Parsec.Error (ParseError)
+import           Text.Parser.Braille (Braille(toChar), brl, cells)
 
 -- Braille music code only uses the old 6-dot system.  We enumerate all
 -- possible dot patterns to use the type system to avoid accidentally
 -- specifying invalid dot patterns in the source code.
 $(makeDotsType "SixDots")
 
--- | Convert to Unicode Braille.
-toChar :: SixDots -> Char
-toChar = toEnum . (+ 0x2800) . fromEnum
+instance Braille SixDots
 
 -- | A Parsec based parser type that keeps track of the last seen pitch.
 type Parser = Parsec String (Maybe Pitch.T)
@@ -61,19 +60,11 @@ parse :: Parser a -> Maybe Pitch.T -> SourceName -> String
       -> Either ParseError a
 parse = runParser
 
--- | Match a single Braille cell.
-brl :: SixDots -> Parser SixDots
-brl b = satisfy (== toChar b) $> b <?> [toChar b]
-
 -- | Matches any Unicode Braille character.
 anyBrl :: Parser SixDots
 anyBrl = toBraille <$> satisfy (isInUBrlBlock . fromEnum) where
   toBraille = toEnum . flip (-) 0x2800 . fromEnum
   isInUBrlBlock c = c >= 0x2800 && c <= 0x28FF
-
--- | Parse a "string" of Braille cells.
-cells :: Traversable t => t SixDots -> Parser (t SixDots)
-cells = try . traverse brl
 
 -- With these primitives defined, we can move onto parsing Braille music input.
 
